@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use super::calls::Calls;
-use super::catalog::Tool;
+use super::catalog::{Output, Tool};
 
 const CANCELLED: &str = "Cancelled";
 
@@ -43,25 +43,26 @@ pub(crate) fn call(
     let status = child.wait();
     let succeeded = status.as_ref().is_ok_and(|status| status.success());
     let status = status.map_or_else(|error| error.to_string(), |status| status.to_string());
-    match serde_json::from_slice::<Value>(&stdout) {
-        Ok(envelope) => envelope_result(envelope),
-        Err(_) if tool.path == ["sandbox", "exec"] && !stdout.is_empty() => {
-            guest_text_result(&stdout, succeeded)
-        }
-        Err(_) => error_result(&format!(
-            "agent-desktop {} exited with {status} and no JSON envelope: {}",
-            tool.path.join(" "),
-            String::from_utf8_lossy(&stderr).trim()
-        )),
-    }
+    tool_result(tool, &stdout, &stderr, &status, succeeded)
 }
 
-/// A guest command that prints plain text, such as `--help`, is returned as that text with the guest's status.
-fn guest_text_result(stdout: &[u8], succeeded: bool) -> Value {
-    json!({
-        "content": [{ "type": "text", "text": String::from_utf8_lossy(stdout) }],
-        "isError": !succeeded,
-    })
+/// Maps a child's output to a result by the kind of output its tool writes, never by what the bytes look like.
+/// A passthrough tool hands back its child's own stdout, empty output included, with its exit status.
+fn tool_result(tool: &Tool, stdout: &[u8], stderr: &[u8], status: &str, succeeded: bool) -> Value {
+    match tool.output {
+        Output::Passthrough => json!({
+            "content": [{ "type": "text", "text": String::from_utf8_lossy(stdout) }],
+            "isError": !succeeded,
+        }),
+        Output::Envelope => match serde_json::from_slice::<Value>(stdout) {
+            Ok(envelope) => envelope_result(envelope),
+            Err(_) => error_result(&format!(
+                "agent-desktop {} exited with {status} and no JSON envelope: {}",
+                tool.path.join(" "),
+                String::from_utf8_lossy(stderr).trim()
+            )),
+        },
+    }
 }
 
 /// Builds the child command that runs `tool`. Server globals precede an ordinary tool. `sandbox exec` gets

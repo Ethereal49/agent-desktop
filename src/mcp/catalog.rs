@@ -10,10 +10,23 @@ const TOOL_PREFIX: &str = "desktop";
 const CLAP_HELP_SUBCOMMAND: &str = "help";
 const MAX_COUNT: u64 = 16;
 
+/// The tools whose stdout carries their child's bytes instead of a JSON envelope.
+const PASSTHROUGH_TOOLS: &[&[&str]] = &[&["sandbox", "exec"]];
+
+/// How a tool's child reports its result on stdout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Output {
+    /// The command's one JSON envelope, as every command but `sandbox exec` writes.
+    Envelope,
+    /// The guest command's own bytes and exit status, which the host passes through unchanged.
+    Passthrough,
+}
+
 /// One leaf CLI command exposed as an MCP tool.
 pub(crate) struct Tool {
     pub name: String,
     pub path: Vec<String>,
+    pub output: Output,
     command: Command,
 }
 
@@ -49,9 +62,24 @@ fn collect(command: &Command, mut path: Vec<String>, found: &mut Vec<Tool>) {
         .replace('-', "_");
     found.push(Tool {
         name,
+        output: output_for(&path),
         path,
         command: command.clone(),
     });
+}
+
+fn output_for(path: &[String]) -> Output {
+    let passthrough = PASSTHROUGH_TOOLS.iter().any(|tool| {
+        tool.len() == path.len()
+            && tool
+                .iter()
+                .zip(path)
+                .all(|(part, name)| *part == name.as_str())
+    });
+    match passthrough {
+        true => Output::Passthrough,
+        false => Output::Envelope,
+    }
 }
 
 impl Tool {

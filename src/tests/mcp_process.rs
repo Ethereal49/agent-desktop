@@ -115,10 +115,14 @@ fn mcp_sandbox_exec_reaches_the_sandbox_when_the_server_has_globals() {
     for response in &responses {
         let result = &response["result"];
         assert_eq!(result["isError"], true, "{result}");
-        assert_eq!(
-            result["structuredContent"]["error"]["code"], "SANDBOX_NOT_FOUND",
-            "{result}"
-        );
+        assert!(result.get("structuredContent").is_none(), "{result}");
+        let envelope: Value = serde_json::from_str(
+            result["content"][0]["text"]
+                .as_str()
+                .expect("exec passes the host's envelope through as text"),
+        )
+        .expect("the host's envelope is still JSON");
+        assert_eq!(envelope["error"]["code"], "SANDBOX_NOT_FOUND", "{result}");
     }
 }
 
