@@ -68,7 +68,7 @@ A `sandbox create` that times out, or whose provider ends without a readable rep
 
 `create`, `start`, `stop` and `rm` on one sandbox run one at a time. A second one fails at once with `ACTION_FAILED` and `not_delivered`.
 
-`sandbox exec` passes the guest command's stdout and exit status through unchanged instead of adding an envelope; the guest's stderr is not passed through and the guest receives no stdin, so a guest command that reads `--stdin` gets empty input. A provider failure returns a host error envelope instead. agent-desktop reads at most 8 MiB from each of the guest's output streams; a command that prints more fails with `ACTION_FAILED`, so write large output to a file in the guest. A guest command that runs longer than 300 seconds fails with `TIMEOUT`.
+`sandbox exec` passes the guest command's stdout and exit status through unchanged instead of adding an envelope; the guest's stderr is not passed through and the guest receives no stdin, so a guest command that reads `--stdin` gets empty input. A provider failure returns a host error envelope instead. agent-desktop reads at most 8 MiB from each of the guest's output streams; a command that prints more fails with `ACTION_FAILED`, so write large output to a file in the guest. A guest command that runs longer than 300 seconds fails with `TIMEOUT`. The host's session and agent id never reach the guest: the flags are refused before `sandbox exec`, and `AGENT_DESKTOP_SESSION` and `AGENT_DESKTOP_AGENT_ID` are not passed on. Give the guest command its own `--session` after `--`.
 
 ## Disposition values
 

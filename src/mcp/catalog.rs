@@ -97,6 +97,15 @@ impl Tool {
         }
         if has_last_positional {
             positionals.sort_by_key(|(index, _)| *index);
+            if let Some(flag_like) = positionals
+                .iter()
+                .flat_map(|(_, values)| values)
+                .find(|value| value.starts_with('-'))
+            {
+                return Err(format!(
+                    "'{flag_like}' would be read as an option; it cannot start with '-'"
+                ));
+            }
             argv.extend(positionals.into_iter().flat_map(|(_, values)| values));
             if !last_positionals.is_empty() {
                 last_positionals.sort_by_key(|(index, _)| *index);

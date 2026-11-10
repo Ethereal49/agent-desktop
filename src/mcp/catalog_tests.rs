@@ -141,6 +141,10 @@ fn sandbox_exec_keeps_nested_arguments_after_the_delimiter() {
     let argv = tool
         .argv(&arguments)
         .expect("sandbox exec arguments build argv");
+    let mut option_shaped = arguments.clone();
+    option_shaped.insert("name".into(), Value::from("--help"));
+    tool.argv(&option_shaped)
+        .expect_err("a name shaped like an option never reaches the host parser");
     assert_eq!(
         argv,
         [
