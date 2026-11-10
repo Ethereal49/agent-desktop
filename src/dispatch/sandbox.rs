@@ -64,7 +64,10 @@ fn exec_passthrough(
             agent_desktop_core::validate_state_root_env().map_err(crate::pre_dispatch_error)
         })
         .and_then(|()| sandbox::execute_exec(args.name.clone(), args.args.clone(), adapter))
-        .map_err(|error| super::disposition::settle_unknown_delivery(error, false))
+        .map_err(|error| {
+            let before_the_provider_ran = !matches!(error, AppError::Adapter(_));
+            super::disposition::settle_unknown_delivery(error, before_the_provider_ran)
+        })
 }
 
 fn write_stdout(bytes: &[u8]) -> std::io::Result<()> {
@@ -95,10 +98,7 @@ fn to_core(action: SandboxActionCli) -> SandboxAction {
         SandboxActionCli::Stop(args) => SandboxAction::Stop { name: args.name },
         SandboxActionCli::Status(args) => SandboxAction::Status { name: args.name },
         SandboxActionCli::List => SandboxAction::List,
-        SandboxActionCli::Rm(args) => SandboxAction::Rm {
-            name: args.name,
-            provider: args.provider,
-        },
+        SandboxActionCli::Rm(args) => SandboxAction::Rm { name: args.name },
         SandboxActionCli::Exec(exec) => SandboxAction::Exec {
             name: exec.name,
             args: exec.args,

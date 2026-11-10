@@ -22,6 +22,7 @@ const NON_COMMAND_MODULES: &[&str] = &[
     "find_live_test_support",
     "sandbox_action",
     "sandbox_install",
+    "sandbox_list",
     "selector_observation",
     "surface_scope",
     "type_text_interval",

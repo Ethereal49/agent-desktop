@@ -21,7 +21,7 @@ pub(crate) enum SandboxActionCli {
     #[command(about = "List every sandbox with its provider and state")]
     List,
     #[command(about = "Remove a stopped sandbox")]
-    Rm(SandboxRmArgs),
+    Rm(SandboxNameArgs),
     #[command(about = "Run agent-desktop inside a sandbox and pass its output through")]
     Exec(SandboxExecArgs),
 }
@@ -42,25 +42,13 @@ pub(crate) struct SandboxNameArgs {
 }
 
 #[derive(Args, Debug)]
-pub(crate) struct SandboxRmArgs {
-    #[arg(help = "Sandbox name: lowercase letters, digits and hyphens")]
-    pub name: String,
-    #[arg(
-        long,
-        value_name = "PROVIDER",
-        help = "Provider that created the sandbox; only for a sandbox whose record is malformed or missing"
-    )]
-    pub provider: Option<String>,
-}
-
-#[derive(Args, Debug)]
 pub(crate) struct SandboxCreateArgs {
     #[arg(help = "Sandbox name: lowercase letters, digits and hyphens")]
     pub name: String,
     #[arg(
         long,
         value_name = "PROVIDER",
-        help = "Provider that owns the sandbox (macos)"
+        help = "Provider that owns the sandbox; `sandbox install` lists the providers in this build"
     )]
     pub provider: String,
     #[arg(

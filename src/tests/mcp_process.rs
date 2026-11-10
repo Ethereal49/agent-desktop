@@ -87,7 +87,7 @@ fn mcp_server_global_flags_reach_every_call() {
 }
 
 #[test]
-fn mcp_sandbox_exec_hands_server_globals_to_the_guest_command() {
+fn mcp_sandbox_exec_reaches_the_sandbox_when_the_server_has_globals() {
     let name = format!("missing-{}", std::process::id());
     let responses = serve(
         &[

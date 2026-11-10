@@ -218,17 +218,11 @@ Multi-agent cursors (macOS and Windows): start with `session start --cursor --mu
 
 ## Sandboxes
 
-`agent-desktop sandbox install` lists the providers, and `agent-desktop sandbox list` lists the sandboxes with `name`, `state`, `message`, and `next`. A single sandbox command also returns its `provider`.
+`agent-desktop sandbox install` lists the providers this build includes, and `agent-desktop sandbox list` lists the sandboxes with `name`, `state`, `message`, and `next`. A single sandbox command also returns its `provider`. A build can include no providers: `sandbox install` then returns an empty list, and a command that names a provider fails with `INVALID_ARGS`.
 
-A sandbox whose record is malformed or missing appears in `sandbox list` with `state: "broken"` and no `provider`, because agent-desktop cannot read who owns it. Recover it with the provider that created it:
+A sandbox whose record is missing or malformed, or names a provider this build does not include, appears in `sandbox list` with `state: "broken"`, and every command on it returns `INVALID_ARGS`. `next` and `suggestion` name the directory to delete once nothing in it is still running. A sandbox whose status check failed is also `broken`; follow its `next`, which is not always a removal.
 
-```bash
-agent-desktop sandbox rm dev-1 --provider macos
-```
-
-`--provider` is for that recovery only. A healthy record supplies its own provider, and a different value is refused. Removal still asks the provider first, so a running sandbox is refused and its data stays. Without `--provider`, the same broken record returns `INVALID_ARGS` with the recovery command in `suggestion`.
-
-A record that names a provider this build does not know is also `broken`, with the recorded `provider` shown. Remove it with the agent-desktop build that created it. If the record itself is wrong, `sandbox rm <name> --provider <provider>` accepts the provider that created the sandbox.
+`create`, `start`, `stop` and `rm` on one sandbox run one at a time; a second one fails with `ACTION_FAILED`. `sandbox exec` ends a guest command after 300 seconds with `TIMEOUT`.
 
 ## status, permissions, version
 

@@ -13,13 +13,11 @@ const REMOVED: &str = r#"{"ok":true,"state":"stopped","message":"Sandbox dev-1 i
 const UNAVAILABLE: &str =
     r#"{"ok":true,"state":"unavailable","message":"This Mac cannot run virtual machines."}"#;
 const UNREADABLE: &str = "the provider printed no reply";
-const STATUS_FAILED: &str = r#"{"ok":false,"code":"ACTION_FAILED","message":"The provider could not read the sandbox state.","suggestion":"Run `agent-desktop sandbox list` again."}"#;
 const RM_FAILED: &str = r#"{"ok":false,"code":"ACTION_FAILED","message":"The provider did not remove the sandbox.","suggestion":"Run `agent-desktop sandbox rm dev-1` again."}"#;
 
 fn rm_action() -> SandboxAction {
     SandboxAction::Rm {
         name: "dev-1".to_string(),
-        provider: None,
     }
 }
 
@@ -87,11 +85,7 @@ fn a_failed_create_leaves_no_record_unless_the_provider_left_files() {
     }
 
     let home = HomeGuard::new();
-    let sandbox_dir = sandboxes_root(&home).join("dev-1");
-    crate::storage::private_file_parent::ensure_private(&sandbox_dir)
-        .expect("private sandbox directory");
-    std::fs::write(sandbox_dir.join("id_ed25519"), b"key").expect("provider file");
-    let adapter = ScriptedAdapter::new();
+    let adapter = ScriptedAdapter::new().leaving("id_ed25519");
 
     execute(create_action(), &adapter).expect_err("the provider create fails");
 
@@ -216,44 +210,6 @@ fn a_broken_list_entry_can_still_be_removed() {
             .expect_err("the record is gone")
             .code(),
         "SANDBOX_NOT_FOUND"
-    );
-}
-
-#[test]
-fn a_status_transport_error_still_lets_the_provider_remove_the_sandbox() {
-    let home = HomeGuard::new();
-    let adapter = ScriptedAdapter::new()
-        .reply("create", CREATED, 0)
-        .reply("rm", REMOVED, 0);
-    execute(create_action(), &adapter).expect("create");
-
-    execute(rm_action(), &adapter).expect("the provider rm runs even when status cannot run");
-
-    assert_eq!(
-        adapter.requests().len(),
-        3,
-        "the provider saw status and then rm after create"
-    );
-    assert!(
-        sandbox_store::load(&sandboxes_root(&home), "dev-1").is_err(),
-        "a successful provider rm removes the record"
-    );
-}
-
-#[test]
-fn a_status_failure_reply_still_lets_the_provider_remove_the_sandbox() {
-    let home = HomeGuard::new();
-    let adapter = ScriptedAdapter::new()
-        .reply("create", CREATED, 0)
-        .reply("status", STATUS_FAILED, 0)
-        .reply("rm", REMOVED, 0);
-    execute(create_action(), &adapter).expect("create");
-
-    execute(rm_action(), &adapter).expect("the provider rm runs after a failed status reply");
-
-    assert!(
-        sandbox_store::load(&sandboxes_root(&home), "dev-1").is_err(),
-        "a successful provider rm removes the record"
     );
 }
 

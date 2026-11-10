@@ -22,17 +22,18 @@ pub(crate) fn find_provider(name: &str) -> Result<&'static ProviderSpec, AppErro
         .find(|spec| spec.name == name)
         .ok_or_else(|| {
             let known: Vec<&str> = PROVIDERS.iter().map(|spec| spec.name).collect();
-            let known = if known.is_empty() {
-                "none".to_string()
+            let message = if known.is_empty() {
+                format!(
+                    "Unknown sandbox provider {name}. This build includes no sandbox providers."
+                )
             } else {
-                known.join(", ")
+                format!(
+                    "Unknown sandbox provider {name}. Known providers: {}.",
+                    known.join(", ")
+                )
             };
             AppError::Adapter(
-                AdapterError::new(
-                    ErrorCode::InvalidArgs,
-                    format!("Unknown sandbox provider {name}. Known providers: {known}."),
-                )
-                .with_suggestion(
+                AdapterError::new(ErrorCode::InvalidArgs, message).with_suggestion(
                     "Run `agent-desktop sandbox install` to see the providers and their states.",
                 ),
             )

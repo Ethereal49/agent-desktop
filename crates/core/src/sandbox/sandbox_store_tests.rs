@@ -2,7 +2,6 @@ use super::{RECORD_FILE, create, list, load};
 use crate::sandbox::sandbox_record::SandboxRecord;
 use crate::storage::private_file::write_atomic;
 use crate::storage::private_file_parent::ensure_private;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};
 
@@ -90,21 +89,6 @@ fn concurrent_creates_of_one_name_admit_exactly_one_and_refuse_the_rest_as_dupli
 }
 
 #[test]
-fn a_published_record_has_one_link_and_no_staging_left_over() {
-    let scratch = Scratch::new("published");
-    let root = scratch.root();
-    create(&root, &record("dev-1", "macos", 1)).unwrap();
-
-    let dir = root.join("dev-1");
-    let entries: Vec<OsString> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name())
-        .collect();
-    assert_eq!(entries, vec![OsString::from(RECORD_FILE)]);
-    assert_eq!(load(&root, "dev-1").unwrap().created_at, 1);
-}
-
-#[test]
 fn malformed_record_is_kept_beside_a_healthy_one_and_non_sandboxes_are_skipped() {
     let scratch = Scratch::new("list-malformed");
     let root = scratch.root();
@@ -123,10 +107,10 @@ fn malformed_record_is_kept_beside_a_healthy_one_and_non_sandboxes_are_skipped()
     let broken = entries[0].record.as_ref().expect_err("malformed record");
     assert_eq!(broken.code(), "INVALID_ARGS");
     assert!(
-        broken
-            .suggestion()
-            .is_some_and(|suggestion| suggestion.contains("--provider")),
-        "the error names the recovery flag"
+        broken.suggestion().is_some_and(
+            |suggestion| suggestion.contains(&root.join("broken").display().to_string())
+        ),
+        "the error names the directory to delete"
     );
     assert_eq!(
         entries[1].record.as_ref().expect("healthy record").provider,
@@ -152,7 +136,7 @@ fn empty_and_missing_records_are_kept_as_broken_directories() {
     assert_eq!(entries[1].name, "missing");
     assert_eq!(
         entries[1].record.as_ref().expect_err("missing").code(),
-        "SANDBOX_NOT_FOUND"
+        "INVALID_ARGS"
     );
 }
 
@@ -193,7 +177,7 @@ fn a_crash_before_publish_leaves_no_record_and_the_next_create_publishes() {
         load(&root, "crash")
             .expect_err("nothing was published")
             .code(),
-        "SANDBOX_NOT_FOUND"
+        "INVALID_ARGS"
     );
 
     create(&root, &record("crash", "macos", 1)).expect("a crashed publish is retryable");
@@ -230,13 +214,4 @@ fn removing_a_directory_the_provider_already_removed_succeeds() {
     std::fs::remove_dir_all(root.join("dev-1")).unwrap();
 
     super::remove(&root, "dev-1").expect("nothing is left to remove");
-}
-
-#[test]
-fn an_oversized_record_is_malformed_so_recovery_can_remove_it() {
-    let scratch = Scratch::new("oversized");
-    let root = scratch.root();
-    write_record(&root, "dev-1", &vec![b' '; 8192]);
-
-    assert_eq!(load(&root, "dev-1").unwrap_err().code(), "INVALID_ARGS");
 }

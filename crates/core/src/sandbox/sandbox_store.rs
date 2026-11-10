@@ -12,22 +12,49 @@ use std::path::{Path, PathBuf};
 pub(crate) const RECORD_FILE: &str = "sandbox.json";
 const CREATE_LOCK_FILE: &str = ".create.lock";
 const MAX_RECORD_BYTES: u64 = 4096;
+const BUSY_WAIT_MS: u64 = 200;
 
 pub(crate) fn create(root: &Path, record: &SandboxRecord) -> Result<PathBuf, AppError> {
     validate_sandbox_name(&record.name)?;
-    let dir = root.join(&record.name);
-    ensure_private(&dir)?;
+    ensure_private(root)?;
     let _lock = FileLock::acquire(
         &root.join(CREATE_LOCK_FILE),
         Deadline::standard()?,
         "sandbox record create",
     )?;
-    let destination = dir.join(RECORD_FILE);
-    if entry_exists(&destination)? {
+    let dir = root.join(&record.name);
+    if entry_exists(&dir)? && !is_crashed_publish(&dir) {
         return Err(already_exists(&load(root, &record.name)?));
     }
-    write_atomic(&destination, &serde_json::to_vec(record)?)?;
+    ensure_private(&dir)?;
+    write_atomic(&dir.join(RECORD_FILE), &serde_json::to_vec(record)?)?;
     Ok(dir)
+}
+
+/// Takes the sandbox's lock, so only one command changes a sandbox at a time. A held lock fails at once.
+pub(crate) fn hold(root: &Path, name: &str) -> Result<FileLock, AppError> {
+    validate_sandbox_name(name)?;
+    ensure_private(root)?;
+    FileLock::acquire(
+        &root.join(format!(".{name}.lock")),
+        Deadline::after(BUSY_WAIT_MS)?,
+        "sandbox change",
+    )
+    .map_err(|_| busy(name))
+}
+
+/// Whether `dir` holds nothing but the temporaries of a record write that never finished.
+fn is_crashed_publish(dir: &Path) -> bool {
+    let is_directory = std::fs::symlink_metadata(dir).is_ok_and(|metadata| metadata.is_dir());
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    is_directory
+        && entries.filter_map(Result::ok).all(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with(&format!(".{RECORD_FILE}.")) && name.ends_with(".tmp")
+        })
 }
 
 fn entry_exists(path: &Path) -> Result<bool, AppError> {
@@ -40,14 +67,29 @@ fn entry_exists(path: &Path) -> Result<bool, AppError> {
 
 pub(crate) fn load(root: &Path, name: &str) -> Result<SandboxRecord, AppError> {
     validate_sandbox_name(name)?;
-    match read_private_bounded(&root.join(name).join(RECORD_FILE), MAX_RECORD_BYTES) {
+    let dir = root.join(name);
+    match std::fs::symlink_metadata(&dir) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Err(broken(root, name, "its entry is not a regular directory")),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Err(not_found(name)),
+        Err(error) => return Err(broken(root, name, &error.to_string())),
+    }
+    match read_private_bounded(&dir.join(RECORD_FILE), MAX_RECORD_BYTES) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .ok()
             .filter(|record: &SandboxRecord| record.name == name)
-            .ok_or_else(|| invalid_record(name)),
-        Err(error) if error.kind() == ErrorKind::NotFound => Err(not_found(name)),
-        Err(error) if error.kind() == ErrorKind::InvalidData => Err(invalid_record(name)),
-        Err(error) => Err(error.into()),
+            .ok_or_else(|| broken(root, name, "its record is malformed")),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            Err(broken(root, name, "its record file is missing"))
+        }
+        Err(error) if error.kind() == ErrorKind::InvalidData => {
+            Err(broken(root, name, "its record is malformed"))
+        }
+        Err(error) => Err(broken(
+            root,
+            name,
+            &format!("its record was not read: {error}"),
+        )),
     }
 }
 
@@ -70,6 +112,12 @@ pub(crate) fn list(root: &Path) -> Result<Vec<SandboxEntry>, AppError> {
             continue;
         }
         let record = load(root, &name);
+        if record
+            .as_ref()
+            .is_err_and(|error| error.code() == ErrorCode::SandboxNotFound.as_str())
+        {
+            continue;
+        }
         sandboxes.push(SandboxEntry { name, record });
     }
     sandboxes.sort_by(|a, b| a.name.cmp(&b.name));
@@ -95,36 +143,36 @@ fn already_exists(record: &SandboxRecord) -> AppError {
             ),
         )
         .with_suggestion(format!(
-            "Pick another name, or run `agent-desktop sandbox rm {}` first.",
+            "Pick another name, or remove it first: run `agent-desktop sandbox list` and follow the entry for {}.",
             record.name
         ))
         .with_disposition(DeliverySemantics::not_delivered()),
     )
 }
 
-fn invalid_record(name: &str) -> AppError {
+/// The one error for a sandbox agent-desktop cannot use. It has no provider to ask, so the way out is manual.
+pub(crate) fn broken(root: &Path, name: &str, reason: &str) -> AppError {
     AppError::Adapter(
         AdapterError::new(
             ErrorCode::InvalidArgs,
-            format!(
-                "The record for sandbox {name} is malformed, so agent-desktop cannot tell which provider owns it."
-            ),
+            format!("Sandbox {name} cannot be used: {reason}."),
         )
         .with_suggestion(format!(
-            "Run `agent-desktop sandbox rm {name} --provider <provider>` with the provider that created it."
+            "Stop anything the sandbox still runs, then delete {}.",
+            root.join(name).display()
         ))
         .with_disposition(DeliverySemantics::not_delivered()),
     )
 }
 
-pub(crate) fn missing_record(name: &str) -> AppError {
+fn busy(name: &str) -> AppError {
     AppError::Adapter(
         AdapterError::new(
-            ErrorCode::InvalidArgs,
-            format!("The sandbox directory {name} exists but its record file is missing."),
+            ErrorCode::ActionFailed,
+            format!("Another agent-desktop command is changing sandbox {name}."),
         )
         .with_suggestion(format!(
-            "Run `agent-desktop sandbox rm {name} --provider <provider>` with the provider that created it."
+            "Run `agent-desktop sandbox status {name}` and retry when that command has finished."
         ))
         .with_disposition(DeliverySemantics::not_delivered()),
     )

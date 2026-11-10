@@ -171,25 +171,6 @@ fn sandbox_exec_keeps_nested_arguments_after_the_delimiter() {
     assert_eq!(exec.args, nested_args);
 }
 
-#[test]
-fn sandbox_rm_schema_exposes_the_recovery_provider() {
-    let tool = tool_at(&["sandbox", "rm"]);
-    let definition = tool.definition();
-
-    assert_eq!(
-        definition["inputSchema"]["properties"]["provider"]["type"],
-        "string"
-    );
-    assert!(
-        definition["inputSchema"]["required"]
-            .as_array()
-            .is_some_and(|required| !required
-                .iter()
-                .any(|name| name.as_str() == Some("provider"))),
-        "the provider is optional"
-    );
-}
-
 fn tool_at(path: &[&str]) -> Tool {
     tools()
         .into_iter()

@@ -1,4 +1,5 @@
 use agent_desktop_core::{AdapterError, ErrorCode, ProviderScriptOutput, ProviderScriptRequest};
+use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
@@ -32,7 +33,10 @@ pub(crate) fn run_provider_script(
     let stderr_start = output.stderr.len().saturating_sub(4096);
 
     Ok(ProviderScriptOutput {
-        status: output.status.code(),
+        status: output
+            .status
+            .code()
+            .or_else(|| output.status.signal().map(|signal| 128 + signal)),
         stdout: output.stdout,
         stderr_tail: String::from_utf8_lossy(&output.stderr[stderr_start..]).into_owned(),
     })

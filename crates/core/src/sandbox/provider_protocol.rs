@@ -18,7 +18,7 @@ pub(crate) fn parse_reply(
     mutating: bool,
     output: &ProviderScriptOutput,
 ) -> Result<ProviderReply, AppError> {
-    let suggestion = next_step(provider, name);
+    let suggestion = next_step(name);
     let value = reply_value(&output.stdout)
         .ok_or_else(|| unreadable(provider, &suggestion, mutating, output))?;
     match value.get("ok").and_then(Value::as_bool) {
@@ -93,6 +93,7 @@ fn failure_error(
 fn exec_failure(provider: &str, output: &ProviderScriptOutput) -> Option<AdapterError> {
     reply_value(&output.stdout)
         .filter(|value| value.get("ok").and_then(Value::as_bool) == Some(false))
+        .filter(|value| failure_fields(value).is_some())
         .map(|value| failure_error(provider, LIST_SUGGESTION, true, &value, output))
 }
 
@@ -127,12 +128,14 @@ fn unreadable(
     )
 }
 
-pub(crate) fn next_step(provider: &str, name: Option<&str>) -> String {
+pub(crate) fn next_step(name: Option<&str>) -> String {
     match name {
         Some(name) => {
             format!("Run `agent-desktop sandbox status {name}` to see its current state.")
         }
-        None => format!("Run `agent-desktop sandbox install {provider}` to see its current state."),
+        None => {
+            "Run `agent-desktop sandbox install` to see each provider's current state.".to_string()
+        }
     }
 }
 

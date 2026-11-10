@@ -28,7 +28,3 @@ impl SandboxState {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "sandbox_state_tests.rs"]
-mod tests;

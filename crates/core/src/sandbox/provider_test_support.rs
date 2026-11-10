@@ -10,6 +10,7 @@ use crate::{AdapterError, ErrorCode, ProviderScriptOutput, ProviderScriptRequest
 pub(crate) struct ScriptedAdapter {
     requests: Mutex<Vec<ProviderScriptRequest>>,
     replies: Mutex<HashMap<String, Result<ProviderScriptOutput, AdapterError>>>,
+    left_file: Mutex<Option<String>>,
 }
 
 impl ScriptedAdapter {
@@ -20,6 +21,22 @@ impl ScriptedAdapter {
     pub(crate) fn reply(self, verb: &str, stdout: &str, status: i32) -> Self {
         self.insert(verb, Ok(output(stdout, status)));
         self
+    }
+
+    /// Makes every provider run leave `file` in the sandbox directory, as a provider that made something does.
+    pub(crate) fn leaving(self, file: &str) -> Self {
+        if let Ok(mut left_file) = self.left_file.lock() {
+            *left_file = Some(file.to_string());
+        }
+        self
+    }
+
+    fn leave_file(&self, request: &ProviderScriptRequest) {
+        let file = self.left_file.lock().ok().and_then(|file| file.clone());
+        let dir = request.env.iter().find(|(key, _)| key == "AD_SANDBOX_DIR");
+        if let (Some(file), Some((_, dir))) = (file, dir) {
+            let _ = std::fs::write(std::path::Path::new(dir).join(file), b"provider data");
+        }
     }
 
     pub(crate) fn fail(self, verb: &str, error: AdapterError) -> Self {
@@ -61,6 +78,7 @@ impl SystemOps for ScriptedAdapter {
         if let Ok(mut requests) = self.requests.lock() {
             requests.push(request.clone());
         }
+        self.leave_file(request);
         let verb = request.args.first().cloned().unwrap_or_default();
         self.replies
             .lock()

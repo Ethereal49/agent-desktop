@@ -106,7 +106,7 @@ impl<'a> ProviderCall<'a> {
         }
         let verb = argv.first().map(String::as_str).unwrap_or("check");
         let provider = self.spec.name;
-        let suggestion = next_step(provider, self.sandbox_name);
+        let suggestion = next_step(self.sandbox_name);
         let timed_out = AdapterError::new(
             ErrorCode::Timeout,
             format!(

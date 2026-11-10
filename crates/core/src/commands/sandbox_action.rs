@@ -20,7 +20,6 @@ pub enum SandboxAction {
     List,
     Rm {
         name: String,
-        provider: Option<String>,
     },
     Exec {
         name: String,
