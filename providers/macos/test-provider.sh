@@ -226,6 +226,8 @@ expect 'status records a finished setup' 0 state running
 [ -f "$tmp/sandboxes/demo/setup_done" ] || fail 'status did not record the finished setup'
 provider demo FAKE_ACCESSIBILITY=denied status demo
 expect 'accessibility not granted' 0 state needs_setup
+[ "$(field next)" = 'agent-desktop sandbox stop demo' ] && [ ! -f "$tmp/sandboxes/demo/setup_done" ] || fail 'a headless sandbox that lost its setup was not sent back to a window'
+: > "$tmp/sandboxes/demo/setup_done"
 provider demo FAKE_SSH=unreachable status demo
 expect 'a guest that does not answer yet' 0 state working
 

@@ -36,7 +36,9 @@ emit_fail() {
 AD_SANDBOX_DIR=${AD_SANDBOX_DIR:-}
 AD_PROVIDER_DIR=${AD_PROVIDER_DIR:-}
 AD_BINARY=${AD_BINARY:-}
-VMHOST=${VMHOST:-$AD_PROVIDER_DIR/build/vmhost}
+# The built VM host is keyed by its own source, so an agent-desktop upgrade that leaves it unchanged reuses it.
+vmhost_key=$(cat "$AD_PROVIDER_DIR/vmhost.swift" "$AD_PROVIDER_DIR/vm.entitlements" 2>/dev/null | shasum -a 1 | cut -c1-16)
+VMHOST=${VMHOST:-$(dirname "$AD_PROVIDER_DIR")/build-$vmhost_key/vmhost}
 HELPER_NAME=agent-desktop-macos-helper
 SCRIPT_PATH=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 verb=${1:-}
@@ -47,7 +49,7 @@ require_provider_environment() {
     emit_fail INVALID_ARGS "agent-desktop did not pass the provider directory this script needs." "Run an agent-desktop sandbox command instead of calling the provider directly."
     exit 1
   fi
-  BUILD_DIR=$AD_PROVIDER_DIR/build
+  BUILD_DIR=$(dirname "$VMHOST")
   BUILD_LOG=$BUILD_DIR/build.log
 }
 
@@ -537,8 +539,14 @@ guest_transport() {
     "$@"
 }
 
+# A guest that needs a person is only reachable through its window, so a headless one must be restarted.
 needs_setup() {
-  emit_ok needs_setup "$1" "agent-desktop sandbox status $2"
+  if ps -ww -o command= -p "$(cat "$VM_DIR/vmhost.pid" 2>/dev/null)" 2>/dev/null | grep -q -- '--window'; then
+    emit_ok needs_setup "$1" "agent-desktop sandbox status $2"
+  else
+    rm -f "$AD_SANDBOX_DIR/setup_done"
+    emit_ok needs_setup "$1 The sandbox is running without a window; stop it and start it again to open one." "agent-desktop sandbox stop $2"
+  fi
 }
 
 setup_window() {
