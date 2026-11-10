@@ -13,7 +13,7 @@ pub(crate) enum SandboxActionCli {
     #[command(about = "Create a sandbox, reusing whatever the provider already installed")]
     Create(SandboxCreateArgs),
     #[command(about = "Start a stopped sandbox")]
-    Start(SandboxNameArgs),
+    Start(SandboxStartArgs),
     #[command(about = "Stop a running sandbox")]
     Stop(SandboxNameArgs),
     #[command(about = "Report one sandbox's state and its next command")]
@@ -55,6 +55,23 @@ pub(crate) struct SandboxCreateArgs {
         long = "set",
         value_name = "KEY=VALUE",
         help = "Provider option; repeat for more than one"
+    )]
+    pub set: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub(crate) struct SandboxStartArgs {
+    #[arg(help = "Sandbox name: lowercase letters, digits and hyphens")]
+    pub name: String,
+    #[arg(
+        long,
+        help = "Show the sandbox's desktop in a window on this host instead of running it headless"
+    )]
+    pub window: bool,
+    #[arg(
+        long = "set",
+        value_name = "KEY=VALUE",
+        help = "Provider option for this start, such as title=<text>; repeat for more than one"
     )]
     pub set: Vec<String>,
 }

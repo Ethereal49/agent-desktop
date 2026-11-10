@@ -10,6 +10,7 @@ pub enum SandboxAction {
     },
     Start {
         name: String,
+        set: Vec<String>,
     },
     Stop {
         name: String,

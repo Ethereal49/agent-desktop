@@ -94,7 +94,15 @@ fn to_core(action: SandboxActionCli) -> SandboxAction {
             provider: create.provider,
             set: create.set,
         },
-        SandboxActionCli::Start(args) => SandboxAction::Start { name: args.name },
+        SandboxActionCli::Start(args) => SandboxAction::Start {
+            name: args.name,
+            set: args
+                .window
+                .then(|| "window=on".to_string())
+                .into_iter()
+                .chain(args.set)
+                .collect(),
+        },
         SandboxActionCli::Stop(args) => SandboxAction::Stop { name: args.name },
         SandboxActionCli::Status(args) => SandboxAction::Status { name: args.name },
         SandboxActionCli::List => SandboxAction::List,

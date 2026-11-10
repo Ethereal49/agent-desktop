@@ -60,3 +60,28 @@ fn a_sandbox_exec_refusal_reports_that_nothing_was_delivered() {
         agent_desktop_core::DeliverySemantics::not_delivered()
     );
 }
+
+#[test]
+fn sandbox_start_window_reaches_the_provider_as_a_setting_beside_the_others() {
+    let cli = crate::Cli::try_parse_from([
+        "agent-desktop",
+        "sandbox",
+        "start",
+        "dev-1",
+        "--window",
+        "--set",
+        "title=Review build",
+    ])
+    .unwrap();
+    let Some(crate::cli::Commands::Sandbox(args)) = cli.command else {
+        panic!("sandbox command");
+    };
+
+    let agent_desktop_core::commands::sandbox_action::SandboxAction::Start { set, .. } =
+        super::to_core(args.action)
+    else {
+        panic!("start action");
+    };
+
+    assert_eq!(set, ["window=on", "title=Review build"]);
+}

@@ -36,10 +36,15 @@ pub fn execute(action: SandboxAction, adapter: &dyn PlatformAdapter) -> Result<V
             provider,
             set,
         } => create(&root, &name, &provider, &set, adapter),
-        SandboxAction::Start { name } => verb_value(&root, &name, "start", START_TIMEOUT, adapter),
-        SandboxAction::Stop { name } => verb_value(&root, &name, "stop", STOP_TIMEOUT, adapter),
+        SandboxAction::Start { name, set } => {
+            let settings = parse_settings(&set)?;
+            verb_value(&root, &name, ("start", START_TIMEOUT), &settings, adapter)
+        }
+        SandboxAction::Stop { name } => {
+            verb_value(&root, &name, ("stop", STOP_TIMEOUT), &[], adapter)
+        }
         SandboxAction::Status { name } => {
-            verb_value(&root, &name, "status", STATUS_TIMEOUT, adapter)
+            verb_value(&root, &name, ("status", STATUS_TIMEOUT), &[], adapter)
         }
         SandboxAction::List => super::sandbox_list::execute(&root, adapter),
         SandboxAction::Rm { name } => remove(&root, &name, adapter),
@@ -137,8 +142,8 @@ fn discard_untouched_record(sandboxes_root: &Path, name: &str) -> bool {
 fn verb_value(
     root: &Path,
     name: &str,
-    verb: &str,
-    timeout: Duration,
+    (verb, timeout): (&str, Duration),
+    settings: &[(String, String)],
     adapter: &dyn PlatformAdapter,
 ) -> Result<Value, AppError> {
     let (spec, provider_dir, sandboxes_root) = locate(root, name)?;
@@ -146,7 +151,7 @@ fn verb_value(
         true => Some(sandbox_store::hold(&sandboxes_root, name)?),
         false => None,
     };
-    let call = ProviderCall::new(spec, &provider_dir, &sandboxes_root, Some(name), &[]);
+    let call = ProviderCall::new(spec, &provider_dir, &sandboxes_root, Some(name), settings);
     let output = call.run(adapter, verb_args(name, verb), timeout)?;
     let reply = parse_reply(spec.name, Some(name), is_mutating(verb), &output)?;
     Ok(success_value(name, Some(spec.name), reply))

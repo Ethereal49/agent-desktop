@@ -110,6 +110,7 @@ fn a_command_does_not_change_a_sandbox_another_command_is_changing() {
         },
         SandboxAction::Start {
             name: "dev-1".to_string(),
+            set: Vec::new(),
         },
         create_action(),
     ] {
