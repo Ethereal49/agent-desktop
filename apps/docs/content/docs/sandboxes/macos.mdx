@@ -61,6 +61,15 @@ agent-desktop sandbox start work                                   # start it he
 
 A clone copies the disk image, the sandbox key, the setup record, and the guest user name, so it starts without a window and SSH reaches the same account. The source must be stopped and set up; otherwise `create` names its state and stops. `--set from` cannot be combined with `--set ipsw` or `--set user`.
 
+A set-up sandbox starts headless. To watch or use its desktop, start it in a window:
+
+```bash
+agent-desktop sandbox start work --window                          # show the guest desktop on the host
+agent-desktop sandbox start work --window --set title="Review build"
+```
+
+The window's title is the sandbox name unless you pass `--set title=<text>`. Closing the window shuts the VM down. A sandbox that is already running headless must be stopped before it can open a window.
+
 `start` answers `running` only once the guest answers over SSH. Until then it answers `working`; repeat `sandbox status` before `sandbox exec`.
 
 ## Limits

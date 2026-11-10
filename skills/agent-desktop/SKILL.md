@@ -83,7 +83,7 @@ agent-desktop sandbox install macos                    # compile and sign the VM
 
 ```sh
 agent-desktop sandbox create demo --provider macos --set from=base   # clone a set-up sandbox; or --set ipsw=latest to install
-agent-desktop sandbox start demo                       # start the sandbox
+agent-desktop sandbox start demo                       # start it headless; add --window to show its desktop
 agent-desktop sandbox status demo                      # state, message and next command
 agent-desktop sandbox list                             # every sandbox and its state
 agent-desktop sandbox exec demo -- status              # run a command in the guest

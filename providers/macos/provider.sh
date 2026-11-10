@@ -204,7 +204,7 @@ vmhost_is_live() {
   case $live_pid in ''|*[!0-9]*) return 1 ;; esac
   live_command=$(ps -ww -o command= -p "$live_pid" 2>/dev/null | tr -d '\r' | sed -e 's/[[:space:]]*$//' || true)
   case $live_command in
-    *"vmhost run $1"|*"vmhost run $1 --window") return 0 ;;
+    *"vmhost run $1"|*"vmhost run $1 --window"*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -425,12 +425,13 @@ reject_empty_setting() {
   fi
 }
 
+# reject_unknown_settings "<allowed keys>": refuses any --set key the verb does not take.
 reject_unknown_settings() {
-  for setting_name in $(env | sed -n 's/^AD_SET_\([A-Z0-9_]*\)=.*/\1/p'); do
-    case $setting_name in
-      IPSW|FROM|USER) ;;
+  for setting_name in $(env | sed -n 's/^AD_SET_\([A-Z0-9_]*\)=.*/\1/p' | tr 'A-Z' 'a-z'); do
+    case " $1 " in
+      *" $setting_name "*) ;;
       *)
-        emit_fail INVALID_ARGS "Unknown setting $(printf '%s' "$setting_name" | tr 'A-Z' 'a-z')." "Pass --set with one of these keys: ipsw, from, user."
+        emit_fail INVALID_ARGS "Unknown setting $setting_name." "Pass --set with one of these keys: $1."
         return 1
         ;;
     esac
@@ -439,7 +440,7 @@ reject_unknown_settings() {
 
 do_create() {
   name=$1
-  reject_unknown_settings || return 1
+  reject_unknown_settings "ipsw from user" || return 1
   reject_empty_setting "${AD_SET_IPSW+x}" "${AD_SET_IPSW:-}" ipsw "$name" || return 1
   reject_empty_setting "${AD_SET_FROM+x}" "${AD_SET_FROM:-}" from "$name" || return 1
   reject_empty_setting "${AD_SET_USER+x}" "${AD_SET_USER:-}" user "$name" || return 1
@@ -540,8 +541,12 @@ guest_transport() {
 }
 
 # A guest that needs a person is only reachable through its window, so a headless one must be restarted.
+window_is_open() {
+  ps -ww -o command= -p "$(cat "$VM_DIR/vmhost.pid" 2>/dev/null)" 2>/dev/null | grep -q -- '--window'
+}
+
 needs_setup() {
-  if ps -ww -o command= -p "$(cat "$VM_DIR/vmhost.pid" 2>/dev/null)" 2>/dev/null | grep -q -- '--window'; then
+  if window_is_open; then
     emit_ok needs_setup "$1" "agent-desktop sandbox status $2"
   else
     rm -f "$AD_SANDBOX_DIR/setup_done"
@@ -630,7 +635,7 @@ spawn_vmhost() {
     return 1
   fi
   if [ "$mode" = window ]; then
-    nohup "$VMHOST" run "$VM_DIR" --window >> "$VM_DIR/vmhost.log" 2>&1 < /dev/null &
+    nohup "$VMHOST" run "$VM_DIR" --window ${AD_SET_TITLE:+"$AD_SET_TITLE"} >> "$VM_DIR/vmhost.log" 2>&1 < /dev/null &
   else
     nohup "$VMHOST" run "$VM_DIR" >> "$VM_DIR/vmhost.log" 2>&1 < /dev/null &
   fi
@@ -648,16 +653,28 @@ spawn_vmhost() {
 
 do_start() {
   name=$1
+  reject_unknown_settings "window title" || return 1
+  case ${AD_SET_WINDOW:-off} in
+    on|off) ;;
+    *)
+      emit_fail INVALID_ARGS "The window setting is on or off." "Run agent-desktop sandbox start $name --window."
+      return 1
+      ;;
+  esac
+  mode=headless
+  if [ ! -f "$AD_SANDBOX_DIR/setup_done" ] || [ "${AD_SET_WINDOW:-off}" = on ] || [ -n "${AD_SET_TITLE:-}" ]; then mode=window; fi
   phase=$(sandbox_phase "$AD_SANDBOX_DIR")
   if report_phase "$name" "$phase"; then return 0; fi
+  if [ "$phase" = running ] && [ "$mode" = window ] && ! window_is_open; then
+    emit_fail INVALID_ARGS "Sandbox $name is already running without a window." "Run agent-desktop sandbox stop $name, then start it again with --window."
+    return 1
+  fi
   if [ "$phase" = stopped ]; then
     if ! host_runtime_supported; then return 0; fi
     if ! provider_ready; then
       vmhost_missing
       return 1
     fi
-    mode=window
-    [ ! -f "$AD_SANDBOX_DIR/setup_done" ] || mode=headless
     if ! spawn_vmhost "$mode"; then
       emit_fail ACTION_FAILED "The VM host for sandbox $name did not start; see $VM_DIR/vmhost.log." "Run agent-desktop sandbox status $name."
       return 1

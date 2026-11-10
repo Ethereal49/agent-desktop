@@ -51,7 +51,7 @@ enum Usage {
     }
 
     static var runArguments: VMError {
-        VMError(message: "vmhost run takes one bundle path and an optional --window.",
+        VMError(message: "vmhost run takes one bundle path and an optional --window with an optional title.",
                 suggestion: "Run `agent-desktop sandbox start <name>` so the provider calls it correctly.")
     }
 
@@ -543,6 +543,7 @@ final class WindowCloseDelegate: NSObject, NSWindowDelegate {
 struct SandboxWindow {
     let window: NSWindow
     let closeDelegate = WindowCloseDelegate()
+    static var title: String?
 
     static func make(bundle: Bundle, machine: VZVirtualMachine) -> SandboxWindow {
         let application = NSApplication.shared
@@ -550,7 +551,7 @@ struct SandboxWindow {
         application.finishLaunching()
         let frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
         let window = NSWindow(contentRect: frame, styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = bundle.sandboxName
+        window.title = title ?? bundle.sandboxName
         let view = VZVirtualMachineView(frame: frame)
         view.autoresizingMask = [.width, .height]
         view.virtualMachine = machine
@@ -570,11 +571,12 @@ struct SandboxWindow {
 
 struct RunCommand {
     static func execute(_ arguments: [String]) throws {
-        guard arguments.count == 1 || (arguments.count == 2 && arguments[1] == "--window") else {
+        guard arguments.count == 1 || ((2...3).contains(arguments.count) && arguments[1] == "--window") else {
             throw Usage.runArguments
         }
         let bundle = Bundle(arguments[0])
-        let showWindow = arguments.count == 2
+        let showWindow = arguments.count >= 2
+        SandboxWindow.title = arguments.count == 3 ? arguments[2] : nil
 
         try RunLock.acquire(bundle)
         if let pid = PidFile.liveProcess(in: bundle) {

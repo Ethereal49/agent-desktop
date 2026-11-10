@@ -211,6 +211,16 @@ vm_pid=$(cat "$tmp/sandboxes/demo/vm/vmhost.pid")
 expect 'start boots a stopped sandbox' 0 state running
 grep -q "vmhost run $tmp/sandboxes/demo/vm\$" "$FAKE_LOG" || fail 'a set-up sandbox did not start headless'
 put demo stopped
+provider demo AD_SET_WINDOW=on 'AD_SET_TITLE=Review build' start demo
+vm_pid=$(cat "$tmp/sandboxes/demo/vm/vmhost.pid")
+expect 'start a set-up sandbox in a window' 0 state running
+grep -q "vmhost run $tmp/sandboxes/demo/vm --window Review build\$" "$FAKE_LOG" || fail 'the window and its title did not reach the VM host'
+put demo running
+provider demo AD_SET_WINDOW=on start demo
+expect 'asking for a window on a headless running sandbox' 1 code INVALID_ARGS
+provider demo AD_SET_WINDOWS=on start demo
+expect 'start with an unknown setting' 1 code INVALID_ARGS
+put demo stopped
 provider demo FAKE_BOOT=fails start demo
 expect 'a VM host that does not boot' 1 code ACTION_FAILED
 put demo stopped
