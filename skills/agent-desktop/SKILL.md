@@ -82,7 +82,7 @@ agent-desktop sandbox install macos                    # compile and sign the VM
 ```
 
 ```sh
-agent-desktop sandbox create demo --provider macos     # add --set key=value for provider options
+agent-desktop sandbox create demo --provider macos --set from=base   # clone a set-up sandbox; or --set ipsw=latest to install
 agent-desktop sandbox start demo                       # start the sandbox
 agent-desktop sandbox status demo                      # state, message and next command
 agent-desktop sandbox list                             # every sandbox and its state
@@ -91,7 +91,7 @@ agent-desktop sandbox stop demo                        # stop the sandbox
 agent-desktop sandbox rm demo                          # remove it
 ```
 
-Names are 1–32 lowercase letters, digits or hyphens, starting with a letter or digit. `exec` returns the guest's envelope and exit status; a provider failure returns a host error. `rm` refuses a sandbox reported as `running`; stop it first.
+Names are 1–32 lowercase letters, digits or hyphens, starting with a letter or digit. `exec` returns the guest's envelope and exit status; a provider failure returns a host error. `rm` refuses a sandbox reported as `running`; stop it first. `create` needs exactly one source: `--set from=<sandbox>`, `--set ipsw=latest` or `--set ipsw=<path>`. `start` answers `working` until the guest answers; wait for `status` to report `running` before `exec`.
 
 Read `state`, `message` and optional `next`; `ok: true` alone does not mean the sandbox is ready.
 

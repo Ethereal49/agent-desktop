@@ -197,38 +197,60 @@ target_has_sandbox_data() {
     [ -e "$AD_SANDBOX_DIR/guest_user" ] || [ -e "$AD_SANDBOX_DIR/setup_done" ]
 }
 
-vm_process_state() {
-  state_file=$1
-  if [ ! -f "$state_file" ]; then printf 'absent\n'; return 0; fi
-  state_pid=$(cat "$state_file" 2>/dev/null || true)
-  case $state_pid in ''|*[!0-9]*) printf 'stale\n'; return 0 ;; esac
-  case $state_pid in *[1-9]*) ;; *) printf 'stale\n'; return 0 ;; esac
-  if ! kill -0 "$state_pid" 2>/dev/null; then printf 'dead\n'; return 0; fi
-  state_comm=$(ps -o comm= -p "$state_pid" 2>/dev/null | tr -d '\r' || true)
-  case $state_comm in *vmhost) ;; *) printf 'stale\n'; return 0 ;; esac
-  state_command=$(ps -ww -o command= -p "$state_pid" 2>/dev/null | tr -d '\r' | sed -e 's/[[:space:]]*$//' || true)
-  state_dir=$(dirname "$state_file")
-  case $state_command in
-    *" run $state_dir"|*" run $state_dir --window") printf 'live\n' ;;
-    *) printf 'stale\n' ;;
+vmhost_is_live() {
+  live_pid=$(cat "$1/vmhost.pid" 2>/dev/null || true)
+  case $live_pid in ''|*[!0-9]*) return 1 ;; esac
+  live_command=$(ps -ww -o command= -p "$live_pid" 2>/dev/null | tr -d '\r' | sed -e 's/[[:space:]]*$//' || true)
+  case $live_command in
+    *"vmhost run $1"|*"vmhost run $1 --window") return 0 ;;
+    *) return 1 ;;
   esac
 }
 
 job_is_running() {
-  [ -f "$VM_DIR/install.pid" ] || return 1
-  JOB_PID=$(cat "$VM_DIR/install.pid" 2>/dev/null || true)
-  case $JOB_PID in ''|*[!0-9]*) return 2 ;; esac
-  case $JOB_PID in *[1-9]*) ;; *) return 2 ;; esac
-  if ! kill -0 "$JOB_PID" 2>/dev/null; then
-    kill -0 -- "-$JOB_PID" 2>/dev/null && return 0
-    return 2
-  fi
-  JOB_COMMAND=$(ps -ww -o command= -p "$JOB_PID" 2>/dev/null || true)
-  case $JOB_COMMAND in *"$SCRIPT_PATH __install_job "*|*"$SCRIPT_PATH __install_job") return 0 ;; *) return 2 ;; esac
+  job_pid=$(cat "$VM_DIR/install.pid" 2>/dev/null || true)
+  case $job_pid in ''|*[!0-9]*) return 1 ;; esac
+  pgrep -g "$job_pid" -f -- "$VM_DIR" >/dev/null 2>&1
 }
 
-broken_state() {
-  emit_ok broken "$1" "agent-desktop sandbox rm $2"
+# The one place a sandbox's phase is worked out from its files. Every verb switches on it.
+#   installing  the install job is alive
+#   failed      the install job ended without finishing, or VM files are missing
+#   stopped     the VM files are complete and no VM host runs them
+#   starting    the VM host is alive and has not booted the guest yet
+#   running     the VM host has booted the guest
+sandbox_phase() {
+  phase_vm=$1/vm
+  if [ ! -f "$phase_vm/install.done" ] && [ -f "$phase_vm/install.pid" ]; then
+    if VM_DIR=$phase_vm job_is_running; then printf 'installing\n'; else printf 'failed\n'; fi
+  elif ! vm_bundle_complete "$phase_vm"; then printf 'failed\n'
+  elif ! vmhost_is_live "$phase_vm"; then printf 'stopped\n'
+  elif [ -f "$phase_vm/vmhost.started" ]; then printf 'running\n'
+  else printf 'starting\n'
+  fi
+}
+
+# Answers the phases that every verb reports the same way. Returns 1 for a phase the verb handles itself.
+report_phase() {
+  case $2 in
+    installing)
+      progress=$(last_progress)
+      if [ -n "$progress" ]; then
+        emit_ok working "Sandbox $1 is installing macOS; the latest progress is $progress." "agent-desktop sandbox status $1"
+      elif [ -f "$AD_SANDBOX_DIR/restore.ipsw" ]; then
+        emit_ok working "Sandbox $1 is downloading the macOS image: $(gigabytes "$(stat -f %z "$AD_SANDBOX_DIR/restore.ipsw" 2>/dev/null || printf '0')") GB so far." "agent-desktop sandbox status $1"
+      else
+        emit_ok working "Sandbox $1 is preparing to install macOS." "agent-desktop sandbox status $1"
+      fi
+      ;;
+    failed)
+      install_reason=
+      [ ! -s "$VM_DIR/install.log" ] || install_reason=" The reason is in $VM_DIR/install.log; read it before removing the sandbox."
+      emit_ok broken "Sandbox $1 has incomplete or failed VM installation files.$install_reason" "agent-desktop sandbox rm $1"
+      ;;
+    starting) emit_ok working "Sandbox $1 is starting." "agent-desktop sandbox status $1" ;;
+    *) return 1 ;;
+  esac
 }
 
 last_progress() {
@@ -240,27 +262,8 @@ gigabytes() {
   awk -v bytes="$1" 'BEGIN { printf "%.1f", bytes / 1000000000 }'
 }
 
-download_message() {
-  download_path=$(cat "$VM_DIR/download.path" 2>/dev/null || true)
-  download_done=$(stat -f %z "$download_path" 2>/dev/null || printf '0\n')
-  case $download_done in ''|*[!0-9]*) download_done=0 ;; esac
-  download_total=$(cat "$VM_DIR/download.size" 2>/dev/null || true)
-  case $download_total in
-    ''|*[!0-9]*|0)
-      printf 'Sandbox %s is downloading the macOS image: %s GB so far.\n' \
-        "$1" "$(gigabytes "$download_done")"
-      ;;
-    *)
-      download_percent=$(awk -v done="$download_done" -v total="$download_total" \
-        'BEGIN { printf "%d", done * 100 / total }')
-      printf 'Sandbox %s is downloading the macOS image: %s of %s GB (%s%%).\n' \
-        "$1" "$(gigabytes "$download_done")" "$(gigabytes "$download_total")" "$download_percent"
-      ;;
-  esac
-}
-
 catalog_firmware() {
-  tr '<' '\n' < "$1" | awk '
+  tr '<' '\n' < "$1" | awk -v host_major="$2" '
     function newer(candidate, current, candidate_parts, current_parts, candidate_count, current_count, i) {
       if (current == "") return 1
       candidate_count = split(candidate, candidate_parts, /[.]/)
@@ -286,7 +289,7 @@ catalog_firmware() {
       next
     }
     in_restore && /^\/dict>/ {
-      if (url != "" && sha != "" && version ~ /^[0-9]+([.][0-9]+)*$/ && newer(version, best_version)) {
+      if (url != "" && sha != "" && version ~ /^[0-9]+([.][0-9]+)*$/ && int(version) <= host_major && newer(version, best_version)) {
         best_url = url
         gsub(/&amp;/, "\\&", best_url)
         best_sha = sha
@@ -344,77 +347,8 @@ create_guest_identity() {
   fi
 }
 
-source_is_eligible() {
-  [ -f "$1/setup_done" ] || return 1
-  [ ! -e "$1/vm/vmhost.pid" ] || return 1
-  [ -f "$1/id_ed25519" ] && [ -f "$1/id_ed25519.pub" ] && \
-    [ -f "$1/known_hosts" ] && [ -f "$1/guest_user" ] || return 1
-  source_user=$(cat "$1/guest_user" 2>/dev/null || true)
-  valid_guest_user "$source_user" || return 1
-  vm_bundle_complete "$1/vm"
-}
-
-source_not_ready() {
-  source_name=$1
-  source_reason=$2
-  case $source_reason in
-    unconfigured)
-      emit_fail ACTION_FAILED "Sandbox $source_name is not a completed setup source." "Run agent-desktop sandbox status $source_name."
-      ;;
-    running)
-      emit_fail ACTION_FAILED "Stop $source_name first." "Run agent-desktop sandbox stop $source_name."
-      ;;
-    stale)
-      emit_fail ACTION_FAILED "Sandbox $source_name has a stale or foreign VM process record." "Run agent-desktop sandbox status $source_name."
-      ;;
-    *)
-      emit_fail ACTION_FAILED "Sandbox $source_name is not stopped and ready to clone." "Run agent-desktop sandbox status $source_name."
-      ;;
-  esac
-  return 1
-}
-
-source_ready_to_clone() {
-  source_dir=$1
-  source_label=${source_dir##*/}
-  if [ ! -f "$source_dir/setup_done" ] || ! vm_bundle_complete "$source_dir/vm"; then
-    source_not_ready "$source_label" unconfigured
-    return 1
-  fi
-  if [ -f "$source_dir/vm/vmhost.pid" ]; then
-    source_state=$(vm_process_state "$source_dir/vm/vmhost.pid")
-    case $source_state in
-      live) source_not_ready "$source_label" running; return 1 ;;
-      stale) source_not_ready "$source_label" stale; return 1 ;;
-      dead) rm -f "$source_dir/vm/vmhost.pid" ;;
-    esac
-  fi
-  if ! source_is_eligible "$source_dir"; then
-    source_not_ready "$source_label" ineligible
-    return 1
-  fi
-}
-
 file_mtime() {
   stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || printf '0\n'
-}
-
-newest_source() {
-  parent=$(dirname "$AD_SANDBOX_DIR")
-  newest=
-  newest_time=0
-  for candidate in "$parent"/*; do
-    [ -d "$candidate" ] || continue
-    [ "$candidate" != "$AD_SANDBOX_DIR" ] || continue
-    [ -f "$candidate/setup_done" ] || continue
-    candidate_time=$(file_mtime "$candidate/setup_done")
-    case $candidate_time in ''|*[!0-9]*) candidate_time=0 ;; esac
-    if [ "$candidate_time" -ge "$newest_time" ]; then
-      newest=$candidate
-      newest_time=$candidate_time
-    fi
-  done
-  printf '%s\n' "$newest"
 }
 
 verify_image_sha() {
@@ -422,141 +356,56 @@ verify_image_sha() {
   [ -n "$verify_sha" ] && [ "$verify_sha" = "$2" ]
 }
 
-publish_image() {
-  publish_source=$1
-  publish_sha=$2
-  publish_target=$CACHE_DIR/$publish_sha.ipsw
-  if [ -f "$publish_target" ] && verify_image_sha "$publish_target" "$publish_sha"; then
-    printf '%s\n' "$publish_target"
-    return 0
-  fi
-  publish_stage=$CACHE_DIR/.$publish_sha.$$.tmp
-  if ! cp "$publish_source" "$publish_stage"; then
-    rm -f "$publish_stage"
+download_latest_image() {
+  catalog=$1.catalog
+  host_version=$(sw_vers -productVersion 2>/dev/null || true)
+  if ! curl -fsSL --connect-timeout 30 --speed-limit 1 --speed-time 120 -o "$catalog" 'https://mesu.apple.com/assets/macos/com_apple_macOSIPSW/com_apple_macOSIPSW.xml'; then
+    printf '%s\n' 'The Apple macOS image catalog could not be downloaded.'
     return 1
   fi
-  if ! verify_image_sha "$publish_stage" "$publish_sha"; then
-    rm -f "$publish_stage"
+  firmware=$(catalog_firmware "$catalog" "${host_version%%.*}")
+  rm -f "$catalog"
+  url=$(printf '%s\n' "$firmware" | sed -n '1p')
+  expected=$(printf '%s\n' "$firmware" | sed -n '2p' | tr 'A-F' 'a-f')
+  case $url in https://*) ;; *) url= ;; esac
+  case $expected in *[!0-9a-f]*) expected= ;; esac
+  if [ -z "$url" ] || [ "${#expected}" -ne 40 ]; then
+    printf '%s\n' "The Apple macOS image catalog lists no image this Mac running macOS $host_version can install."
     return 1
   fi
-  if ! mv -f "$publish_stage" "$publish_target"; then
-    rm -f "$publish_stage"
+  if ! curl -fsSL --connect-timeout 30 --speed-limit 1 --speed-time 120 -o "$1" "$url"; then
+    printf '%s\n' 'The Apple macOS image could not be downloaded.'
     return 1
   fi
-  printf '%s\n' "$publish_target"
-}
-
-download_image() {
-  download_url=$1
-  download_expected=$2
-  download_partial=$3
-  image_size=$(curl -fsSIL --connect-timeout 30 --max-time 60 "$download_url" 2>/dev/null | tr -d '\r' | \
-    awk 'tolower($1) == "content-length:" { size = $2 } END { if (size != "") print size }')
-  case $image_size in
-    ''|*[!0-9]*) image_size= ;;
-    *) printf '%s\n' "$image_size" > "$VM_DIR/download.size" ;;
-  esac
-  printf '%s\n' "$download_partial" > "$VM_DIR/download.path"
-  if verify_image_sha "$download_partial" "$download_expected"; then
-    printf '%s\n' 'The cached Apple macOS image matches its published SHA-1, so the download is skipped.'
-    return 0
-  fi
-  if [ -f "$download_partial" ] && [ -n "$image_size" ]; then
-    cached_size=$(stat -f %z "$download_partial" 2>/dev/null || stat -c %s "$download_partial" 2>/dev/null || printf '0\n')
-    case $cached_size in ''|*[!0-9]*) cached_size=0 ;; esac
-    if [ "$cached_size" -ge "$image_size" ]; then
-      rm -f "$download_partial"
-    fi
-  fi
-  if ! curl -C - -fsSL --connect-timeout 30 --speed-limit 1 --speed-time 120 -o "$download_partial" "$download_url"; then
-    if ! verify_image_sha "$download_partial" "$download_expected"; then
-      rm -f "$download_partial"
-      if ! curl -fsSL --connect-timeout 30 --speed-limit 1 --speed-time 120 -o "$download_partial" "$download_url"; then
-        printf '%s\n' 'The latest Apple macOS image could not be downloaded.'
-        return 1
-      fi
-    fi
-  fi
-  if ! verify_image_sha "$download_partial" "$download_expected"; then
-    rm -f "$download_partial"
+  if ! verify_image_sha "$1" "$expected"; then
     printf '%s\n' 'The downloaded Apple macOS image did not match its published SHA-1.'
     return 1
   fi
 }
 
 do_install_job() {
-  mode=$1
   ipsw=$2
-  CACHE_DIR=$3
-  guest_user=$4
-  host_helper=$(host_helper_path)
-  if [ ! -f "$AD_BINARY" ] || [ ! -f "$host_helper" ] || [ ! -x "$host_helper" ]; then
-    printf '%s\n' "The host agent-desktop package is incomplete: $HELPER_NAME is missing or not executable beside agent-desktop."
-    return 1
-  fi
-  mkdir -p "$VM_DIR/share"
-  if [ "$mode" = download ]; then
-    download_dir=$VM_DIR/download
-    mkdir -p "$CACHE_DIR" "$download_dir"
-    catalog=$download_dir/catalog.xml
-    if ! curl -fsSL --connect-timeout 30 --speed-limit 1 --speed-time 120 -o "$catalog" 'https://mesu.apple.com/assets/macos/com_apple_macOSIPSW/com_apple_macOSIPSW.xml'; then
-      printf '%s\n' 'The Apple macOS image catalog could not be downloaded.'
-      return 1
-    fi
-    firmware=$(catalog_firmware "$catalog")
-    url=$(printf '%s\n' "$firmware" | sed -n '1p')
-    expected=$(printf '%s\n' "$firmware" | sed -n '2p' | tr 'A-F' 'a-f')
-    case $url in https://*|http://*) ;; *) printf '%s\n' 'The Apple macOS image catalog has no firmware URL and SHA-1 pair.'; return 1 ;; esac
-    case $expected in ''|*[!0-9a-f]*) printf '%s\n' 'The Apple macOS image catalog has no firmware URL and SHA-1 pair.'; return 1 ;; esac
-    if [ "${#expected}" -ne 40 ]; then
-      printf '%s\n' 'The Apple macOS image catalog has no firmware URL and SHA-1 pair.'
-      return 1
-    fi
-    image_name=${url##*/}
-    image_name=${image_name%%\?*}
-    [ -n "$image_name" ] || image_name=latest.ipsw
-    shared_image=$CACHE_DIR/$expected.ipsw
-    if verify_image_sha "$shared_image" "$expected"; then
-      printf '%s\n' 'The cached Apple macOS image matches its published SHA-1, so the download is skipped.'
-      ipsw=$shared_image
-    else
-      partial=$download_dir/$image_name
-      if ! download_image "$url" "$expected" "$partial"; then return 1; fi
-      if ! ipsw=$(publish_image "$partial" "$expected"); then
-        printf '%s\n' 'The verified Apple macOS image could not be published to the shared cache.'
-        return 1
-      fi
-      rm -f "$partial"
-    fi
-    rm -f "$VM_DIR/download.path" "$VM_DIR/download.size"
-    rm -rf "$download_dir"
+  if [ "$ipsw" = latest ]; then
+    ipsw=$AD_SANDBOX_DIR/restore.ipsw
+    if ! download_latest_image "$ipsw"; then rm -f "$ipsw"; return 1; fi
   fi
   if ! "$VMHOST" install "$VM_DIR" "$ipsw"; then return 1; fi
+  rm -f "$AD_SANDBOX_DIR/restore.ipsw"
   if ! copy_guest_share "$VM_DIR"; then
     printf '%s\n' 'The guest setup files could not be copied into the shared folder.'
     return 1
   fi
-  printf '%s\n' "$guest_user" > "$AD_SANDBOX_DIR/guest_user"
   : > "$VM_DIR/install.done"
 }
 
 start_install_job() {
   name=$1
-  mode=$2
-  ipsw=$3
-  guest_user=$4
-  cache_dir=$(dirname "$AD_SANDBOX_DIR")/../cache/macos
   if ! mkdir -p "$VM_DIR" || ! : > "$VM_DIR/install.log"; then
     emit_fail ACTION_FAILED "The installation log for sandbox $name could not be created." "Run agent-desktop sandbox status $name."
     return 1
   fi
-  if ! command -v nohup >/dev/null 2>&1; then
-    emit_fail ACTION_FAILED "The host cannot detach the macOS installation job." "Install the standard macOS command-line tools, then run agent-desktop sandbox create $name again."
-    return 1
-  fi
   set -m
-  nohup sh "$SCRIPT_PATH" __install_job "$mode" "$ipsw" "$cache_dir" "$guest_user" \
-    >> "$VM_DIR/install.log" 2>&1 < /dev/null &
+  nohup sh "$SCRIPT_PATH" __install_job "$VM_DIR" "$2" >> "$VM_DIR/install.log" 2>&1 < /dev/null &
   install_job_pid=$!
   set +m
   if ! printf '%s\n' "$install_job_pid" > "$VM_DIR/install.pid"; then
@@ -587,92 +436,83 @@ reject_unknown_settings() {
 }
 
 do_create() {
-  name=${1:-}
-  if ! valid_name "$name"; then
-    emit_fail INVALID_ARGS "The create verb needs a valid sandbox name." "Run agent-desktop sandbox create <name> --provider macos."
-    return 1
-  fi
+  name=$1
   reject_unknown_settings || return 1
   reject_empty_setting "${AD_SET_IPSW+x}" "${AD_SET_IPSW:-}" ipsw "$name" || return 1
   reject_empty_setting "${AD_SET_FROM+x}" "${AD_SET_FROM:-}" from "$name" || return 1
   reject_empty_setting "${AD_SET_USER+x}" "${AD_SET_USER:-}" user "$name" || return 1
+  case ${AD_SET_FROM:+from}${AD_SET_IPSW:+ipsw} in
+    from|ipsw) ;;
+    *)
+      emit_fail INVALID_ARGS "The create verb needs exactly one source: an image to install or a sandbox to clone." "Run agent-desktop sandbox create $name --provider macos with --set ipsw=latest, --set ipsw=<path>, or --set from=<sandbox>."
+      return 1
+      ;;
+  esac
+  if [ -n "${AD_SET_FROM:-}" ] && [ -n "${AD_SET_USER:-}" ]; then
+    emit_fail INVALID_ARGS "The user setting applies only to an install; a clone keeps its source's guest user." "Run agent-desktop sandbox create $name --set from=$AD_SET_FROM without --set user."
+    return 1
+  fi
   if target_has_sandbox_data; then
     emit_fail ACTION_FAILED "Sandbox $name already has provider data." "Run agent-desktop sandbox status $name."
     return 1
   fi
   if ! host_runtime_supported; then return 0; fi
   if ! provider_ready; then
-    emit_fail ACTION_FAILED "The macOS VM host is not installed." "Run agent-desktop sandbox install macos."
+    vmhost_missing
     return 1
   fi
-  image_path=
-  if [ -n "${AD_SET_IPSW:-}" ]; then
+  if ! require_host_package "Run agent-desktop sandbox create $name again after rebuilding agent-desktop with its helper."; then
+    return 1
+  fi
+  if [ -n "${AD_SET_FROM:-}" ]; then
+    create_clone "$name" "$AD_SET_FROM"
+    return $?
+  fi
+  image_path=latest
+  if [ "$AD_SET_IPSW" != latest ]; then
     image_status=0
     image_path=$(resolve_image_path "$AD_SET_IPSW") || image_status=$?
     if [ "$image_status" -eq 2 ]; then
       emit_fail INVALID_ARGS "The supplied macOS image path is relative and agent-desktop did not pass the caller directory." "Run agent-desktop sandbox create $name --set ipsw=<absolute-path>."
       return 1
     fi
-    if [ "$image_status" -ne 0 ] || [ ! -f "$image_path" ]; then
-      emit_fail ACTION_FAILED "The supplied macOS image file was not found." "Run agent-desktop sandbox create $name --set ipsw=<path> with an existing image file."
+    if [ ! -f "$image_path" ]; then
+      emit_fail INVALID_ARGS "The supplied macOS image file was not found." "Run agent-desktop sandbox create $name --set ipsw=<path> with an existing image file, or --set ipsw=latest to download one."
       return 1
     fi
-  fi
-  if ! require_host_package "Run agent-desktop sandbox create $name again after rebuilding agent-desktop with its helper."; then
-    return 1
-  fi
-  source=
-  if [ -n "${AD_SET_FROM:-}" ] && [ -z "${AD_SET_IPSW:-}" ]; then
-    if ! valid_name "$AD_SET_FROM"; then
-      emit_fail INVALID_ARGS "The source sandbox name is invalid." "Run agent-desktop sandbox create $name --set from=<sibling-name>."
-      return 1
-    fi
-    source=$(dirname "$AD_SANDBOX_DIR")/$AD_SET_FROM
-    if [ ! -d "$source" ]; then
-      emit_fail SANDBOX_NOT_FOUND "No sandbox named $AD_SET_FROM exists." "Run \`agent-desktop sandbox list\` to see the sandboxes that exist."
-      return 1
-    fi
-    if ! source_ready_to_clone "$source"; then return 1; fi
-  elif [ -z "${AD_SET_IPSW:-}" ]; then
-    source=$(newest_source)
-    if [ -n "$source" ]; then
-      if ! source_ready_to_clone "$source"; then return 1; fi
-    fi
-  fi
-  source_name=${source##*/}
-  if [ -n "$source" ]; then
-    if ! cp "$source/id_ed25519" "$AD_SANDBOX_DIR/id_ed25519" || \
-      ! cp "$source/id_ed25519.pub" "$AD_SANDBOX_DIR/id_ed25519.pub" || \
-      ! cp "$source/known_hosts" "$AD_SANDBOX_DIR/known_hosts" || \
-      ! cp "$source/guest_user" "$AD_SANDBOX_DIR/guest_user"; then
-      emit_fail ACTION_FAILED "The SSH settings could not be copied from sandbox $source_name." "Run agent-desktop sandbox status $source_name."
-      return 1
-    fi
-    if ! chmod 0600 "$AD_SANDBOX_DIR/id_ed25519"; then
-      emit_fail ACTION_FAILED "The SSH key for sandbox $name could not be protected." "Run agent-desktop sandbox create $name again after checking directory permissions."
-      return 1
-    fi
-    if ! "$VMHOST" clone "$source/vm" "$VM_DIR" >/dev/null 2>&1; then
-      emit_fail ACTION_FAILED "The VM for sandbox $name could not be cloned." "Run agent-desktop sandbox status $source_name."
-      return 1
-    fi
-    if ! copy_guest_share "$VM_DIR"; then
-      emit_fail ACTION_FAILED "The guest setup files could not be copied into sandbox $name." "Run agent-desktop sandbox status $name."
-      return 1
-    fi
-    if ! cp "$source/setup_done" "$AD_SANDBOX_DIR/setup_done"; then
-      emit_fail ACTION_FAILED "The setup record could not be copied from sandbox $source_name." "Run agent-desktop sandbox status $source_name."
-      return 1
-    fi
-    emit_ok stopped "Sandbox $name is a stopped copy of sandbox $source_name." "agent-desktop sandbox start $name"
-    return 0
   fi
   if ! create_guest_identity "$name"; then return 1; fi
-  if [ -n "${AD_SET_IPSW:-}" ]; then
-    start_install_job "$name" supplied "$image_path" "$(cat "$AD_SANDBOX_DIR/guest_user")"
-  else
-    start_install_job "$name" download '' "$(cat "$AD_SANDBOX_DIR/guest_user")"
+  start_install_job "$name" "$image_path"
+}
+
+create_clone() {
+  name=$1
+  source_name=$2
+  source=$(dirname "$AD_SANDBOX_DIR")/$source_name
+  if ! valid_name "$source_name" || [ ! -d "$source" ]; then
+    emit_fail SANDBOX_NOT_FOUND "No sandbox named $source_name exists." "Run \`agent-desktop sandbox list\` to see the sandboxes that exist."
+    return 1
   fi
+  source_phase=$(sandbox_phase "$source")
+  if [ "$source_phase" != stopped ] || [ ! -f "$source/setup_done" ]; then
+    [ "$source_phase" != stopped ] || source_phase='not set up'
+    emit_fail ACTION_FAILED "Sandbox $source_name is $source_phase, and only a stopped, set-up sandbox can be cloned." "Run agent-desktop sandbox status $source_name."
+    return 1
+  fi
+  if ! cp "$source/id_ed25519" "$source/id_ed25519.pub" "$source/known_hosts" "$source/guest_user" "$source/setup_done" "$AD_SANDBOX_DIR/" || \
+    ! chmod 0600 "$AD_SANDBOX_DIR/id_ed25519"; then
+    emit_fail ACTION_FAILED "The SSH settings could not be copied from sandbox $source_name." "Run agent-desktop sandbox status $source_name."
+    return 1
+  fi
+  if ! clone_reply=$("$VMHOST" clone "$source/vm" "$VM_DIR" 2>&1); then
+    emit_fail ACTION_FAILED "The VM for sandbox $name could not be cloned: $clone_reply" "Run agent-desktop sandbox rm $name, fix the cause, then create it again."
+    return 1
+  fi
+  if ! copy_guest_share "$VM_DIR"; then
+    emit_fail ACTION_FAILED "The guest setup files could not be copied into sandbox $name." "Run agent-desktop sandbox status $name."
+    return 1
+  fi
+  emit_ok stopped "Sandbox $name is a stopped copy of sandbox $source_name." "agent-desktop sandbox start $name"
 }
 
 guest_user() {
@@ -684,18 +524,16 @@ guest_user() {
 
 guest_transport() {
   transport_tool=$1
-  transport_budget=$2
-  shift 2
-  if [ "$transport_budget" = probe ]; then
-    set -- -o ServerAliveInterval=3 -o ServerAliveCountMax=3 "$@"
-  fi
-  "$transport_tool" -i "$AD_SANDBOX_DIR/id_ed25519" \
+  shift
+  "$transport_tool" -F /dev/null -i "$AD_SANDBOX_DIR/id_ed25519" \
     -o IdentitiesOnly=yes \
     -o StrictHostKeyChecking=accept-new \
     -o "UserKnownHostsFile=$AD_SANDBOX_DIR/known_hosts" \
     -o BatchMode=yes \
     -o ConnectTimeout=5 \
     -o ConnectionAttempts=1 \
+    -o ServerAliveInterval=3 \
+    -o ServerAliveCountMax=3 \
     "$@"
 }
 
@@ -754,7 +592,7 @@ check_guest_setup() {
   fi
   target=$user@$ip
   probe_status=0
-  permissions=$(guest_transport ssh probe "$target" 'if [ ! -x ~/.local/bin/agent-desktop ]; then exit 3; fi; ~/.local/bin/agent-desktop permissions' 2>/dev/null) || probe_status=$?
+  permissions=$(guest_transport ssh "$target" 'if [ ! -x ~/.local/bin/agent-desktop ]; then exit 3; fi; ~/.local/bin/agent-desktop permissions' 2>/dev/null) || probe_status=$?
   if [ "$probe_status" -eq 255 ]; then
     guest_not_answering "$name" "$user"
     return 0
@@ -777,49 +615,6 @@ check_guest_setup() {
   esac
 }
 
-installation_state() {
-  if [ -f "$VM_DIR/install.done" ]; then return 1; fi
-  if job_is_running; then return 0; fi
-  if [ -f "$VM_DIR/install.pid" ]; then return 2; fi
-  return 1
-}
-
-installation_gate() {
-  install_status=0
-  installation_state || install_status=$?
-  if [ "$install_status" -eq 0 ]; then
-    if [ -f "$VM_DIR/download.path" ]; then
-      emit_ok working "$(download_message "$1")" "agent-desktop sandbox status $1"
-      return 0
-    fi
-    progress=$(last_progress)
-    [ -n "$progress" ] || progress='not available'
-    emit_ok working "Sandbox $1 is installing macOS; the latest progress is $progress." "agent-desktop sandbox status $1"
-    return 0
-  fi
-  if [ "$install_status" -eq 2 ] || ! vm_bundle_complete "$VM_DIR"; then
-    install_reason=
-    [ ! -s "$VM_DIR/install.log" ] || install_reason=" The reason is in $VM_DIR/install.log; read it before removing the sandbox."
-    broken_state "Sandbox $1 has incomplete or failed VM installation files.$install_reason" "$1"
-    return 0
-  fi
-  return 1
-}
-
-start_in_progress() {
-  launching_pid=$(cat "$VM_DIR/vmhost.launching" 2>/dev/null || true)
-  case $launching_pid in ''|*[!0-9]*) return 1 ;; esac
-  kill -0 "$launching_pid" 2>/dev/null
-}
-
-launch_vmhost() {
-  if ! printf '%s\n' "$$" > "$VM_DIR/vmhost.launching"; then return 1; fi
-  launch_status=0
-  spawn_vmhost "$1" || launch_status=$?
-  rm -f "$VM_DIR/vmhost.launching"
-  return "$launch_status"
-}
-
 spawn_vmhost() {
   mode=$1
   if [ ! -x "$VMHOST" ] || ! command -v nohup >/dev/null 2>&1 || \
@@ -834,7 +629,7 @@ spawn_vmhost() {
   launched_pid=$!
   attempts=0
   while [ "$attempts" -lt 300 ]; do
-    if [ -f "$VM_DIR/vmhost.started" ] && [ "$(vm_process_state "$VM_DIR/vmhost.pid")" = live ]; then return 0; fi
+    if [ "$(sandbox_phase "$AD_SANDBOX_DIR")" = running ]; then return 0; fi
     kill -0 "$launched_pid" 2>/dev/null || return 1
     sleep 0.1
     attempts=$((attempts + 1))
@@ -844,79 +639,44 @@ spawn_vmhost() {
 }
 
 do_start() {
-  name=${1:-}
-  if ! valid_name "$name"; then
-    emit_fail INVALID_ARGS "The start verb needs a valid sandbox name." "Run agent-desktop sandbox start <name>."
-    return 1
-  fi
-  if installation_gate "$name"; then return 0; fi
-  vm_state=$(vm_process_state "$VM_DIR/vmhost.pid")
-  if [ "$vm_state" = live ]; then
-    if [ -f "$AD_SANDBOX_DIR/setup_done" ]; then
-      emit_ok running "Sandbox $name is already running."
-    else
-      setup_window "$name"
+  name=$1
+  phase=$(sandbox_phase "$AD_SANDBOX_DIR")
+  if report_phase "$name" "$phase"; then return 0; fi
+  if [ "$phase" = stopped ]; then
+    if ! host_runtime_supported; then return 0; fi
+    if ! provider_ready; then
+      vmhost_missing
+      return 1
     fi
-    return 0
-  fi
-  if [ "$vm_state" = dead ]; then
-    rm -f "$VM_DIR/vmhost.pid"
-  fi
-  if [ "$vm_state" = stale ]; then
-    broken_state "Sandbox $name has a dead or foreign VM process record." "$name"
-    return 0
-  fi
-  if ! host_runtime_supported; then return 0; fi
-  if ! provider_ready; then
-    emit_fail ACTION_FAILED "The macOS VM host is not installed." "Run agent-desktop sandbox install macos."
-    return 1
+    mode=window
+    [ ! -f "$AD_SANDBOX_DIR/setup_done" ] || mode=headless
+    if ! spawn_vmhost "$mode"; then
+      emit_fail ACTION_FAILED "The VM host for sandbox $name did not start; see $VM_DIR/vmhost.log." "Run agent-desktop sandbox status $name."
+      return 1
+    fi
   fi
   if [ -f "$AD_SANDBOX_DIR/setup_done" ]; then
-    if ! launch_vmhost headless; then
-      emit_fail ACTION_FAILED "The VM host for sandbox $name did not start; see $VM_DIR/vmhost.log." "Run agent-desktop sandbox status $name."
-      return 1
-    fi
-    emit_ok running "Sandbox $name is running headlessly."
+    check_guest_setup "$name"
   else
-    if ! launch_vmhost window; then
-      emit_fail ACTION_FAILED "The VM host for sandbox $name did not start; see $VM_DIR/vmhost.log." "Run agent-desktop sandbox status $name."
-      return 1
-    fi
     setup_window "$name"
   fi
 }
 
 do_stop() {
-  name=${1:-}
-  if ! valid_name "$name"; then
-    emit_fail INVALID_ARGS "The stop verb needs a valid sandbox name." "Run agent-desktop sandbox stop <name>."
-    return 1
-  fi
-  if start_in_progress; then
-    emit_fail ACTION_FAILED "Sandbox $name is still starting, so it was not stopped." "Run agent-desktop sandbox stop $name again once the start finishes."
-    return 1
-  fi
-  vm_state=$(vm_process_state "$VM_DIR/vmhost.pid")
-  if [ "$vm_state" = dead ]; then
-    rm -f "$VM_DIR/vmhost.pid"
-    emit_ok stopped "Sandbox $name is stopped; its VM did not shut down cleanly." "agent-desktop sandbox start $name"
-    return 0
-  fi
-  if [ "$vm_state" = absent ]; then
-    emit_ok stopped "Sandbox $name is already stopped."
-    return 0
-  fi
-  if [ "$vm_state" = stale ]; then
-    broken_state "Sandbox $name has a dead or foreign VM process record that was not signalled." "$name"
-    return 0
-  fi
+  name=$1
+  phase=$(sandbox_phase "$AD_SANDBOX_DIR")
+  case $phase in
+    installing)
+      emit_fail ACTION_FAILED "Sandbox $name is still installing, so there is nothing to stop." "Run agent-desktop sandbox status $name."
+      return 1
+      ;;
+    failed) report_phase "$name" "$phase"; return 0 ;;
+    stopped) emit_ok stopped "Sandbox $name is already stopped."; return 0 ;;
+  esac
   stop_pid=$(cat "$VM_DIR/vmhost.pid" 2>/dev/null || true)
-  if ! kill -TERM "$stop_pid" 2>/dev/null; then
-    broken_state "Sandbox $name could not signal its verified VM host process." "$name"
-    return 0
-  fi
+  kill -TERM "$stop_pid" 2>/dev/null || true
   attempts=0
-  while kill -0 "$stop_pid" 2>/dev/null; do
+  while vmhost_is_live "$VM_DIR"; do
     if [ "$attempts" -ge 120 ]; then
       emit_fail TIMEOUT "Sandbox $name did not stop within 24 seconds." "Run agent-desktop sandbox status $name."
       return 1
@@ -928,24 +688,11 @@ do_stop() {
 }
 
 do_status() {
-  name=${1:-}
-  if ! valid_name "$name"; then
-    emit_fail INVALID_ARGS "The status verb needs a valid sandbox name." "Run agent-desktop sandbox status <name>."
-    return 1
-  fi
-  if installation_gate "$name"; then return 0; fi
-  vm_state=$(vm_process_state "$VM_DIR/vmhost.pid")
-  if [ "$vm_state" = dead ]; then
-    rm -f "$VM_DIR/vmhost.pid"
-    emit_ok stopped "Sandbox $name is stopped; its VM did not shut down cleanly." "agent-desktop sandbox start $name"
-    return 0
-  fi
-  if [ "$vm_state" = stale ]; then
-    broken_state "Sandbox $name has a dead or foreign VM process record." "$name"
-    return 0
-  fi
-  if [ "$vm_state" = absent ]; then
-    emit_ok stopped "Sandbox $name is stopped."
+  name=$1
+  phase=$(sandbox_phase "$AD_SANDBOX_DIR")
+  if report_phase "$name" "$phase"; then return 0; fi
+  if [ "$phase" = stopped ]; then
+    emit_ok stopped "Sandbox $name is stopped." "agent-desktop sandbox start $name"
     return 0
   fi
   check_guest_setup "$name"
@@ -957,24 +704,18 @@ clear_share_permissions() {
 }
 
 do_rm() {
-  name=${1:-}
-  if ! valid_name "$name"; then
-    emit_fail INVALID_ARGS "The rm verb needs a valid sandbox name." "Run agent-desktop sandbox rm <name>."
-    return 1
-  fi
-  if job_is_running; then
-    emit_fail ACTION_FAILED "Sandbox $name is still installing, so it was not removed." "Run \`agent-desktop sandbox status $name\` and remove it after the install finishes or fails."
-    return 1
-  fi
-  if start_in_progress; then
-    emit_fail ACTION_FAILED "Sandbox $name is still starting, so it was not removed." "Run \`agent-desktop sandbox status $name\`, then stop it before removing it."
-    return 1
-  fi
-  vm_state=$(vm_process_state "$VM_DIR/vmhost.pid")
-  if [ "$vm_state" = live ]; then
-    emit_fail INVALID_ARGS "Sandbox $name is running, so it was not removed." "Run agent-desktop sandbox stop $name first."
-    return 1
-  fi
+  name=$1
+  phase=$(sandbox_phase "$AD_SANDBOX_DIR")
+  case $phase in
+    installing)
+      emit_fail ACTION_FAILED "Sandbox $name is still installing, so it was not removed." "Run \`agent-desktop sandbox status $name\` and remove it after the install finishes or fails."
+      return 1
+      ;;
+    starting|running)
+      emit_fail INVALID_ARGS "Sandbox $name is running, so it was not removed." "Run agent-desktop sandbox stop $name first."
+      return 1
+      ;;
+  esac
   clear_share_permissions
   if ! rm -rf "$VM_DIR"; then
     emit_fail ACTION_FAILED "The VM files for sandbox $name could not be removed." "Run agent-desktop sandbox status $name."
@@ -997,10 +738,10 @@ sync_guest_file() {
   guest_hash=$5
   if [ "$host_hash" = "$guest_hash" ]; then return 0; fi
   staged="~/.local/bin/$guest_name.$$.new"
-  if ! guest_transport ssh probe "$target" 'mkdir -p ~/.local/bin' >/dev/null || \
-    ! guest_transport scp long "$source_file" "$target:$staged" >/dev/null || \
-    ! guest_transport ssh probe "$target" "chmod 755 $staged && mv -f $staged ~/.local/bin/$guest_name" >/dev/null; then
-    guest_transport ssh probe "$target" "rm -f $staged" >/dev/null 2>&1 || true
+  if ! guest_transport ssh "$target" 'mkdir -p ~/.local/bin' >/dev/null || \
+    ! guest_transport scp "$source_file" "$target:$staged" >/dev/null || \
+    ! guest_transport ssh "$target" "chmod 755 $staged && mv -f $staged ~/.local/bin/$guest_name" >/dev/null; then
+    guest_transport ssh "$target" "rm -f $staged" >/dev/null 2>&1 || true
     return 1
   fi
 }
@@ -1015,25 +756,15 @@ exec_failure() {
 }
 
 do_exec() {
-  name=${1:-}
-  if ! valid_name "$name"; then
-    exec_failure "The exec verb needs a valid sandbox name." "Run agent-desktop sandbox exec <name> -- <args>."
-  fi
+  name=$1
   shift
   if [ "${1:-}" != -- ]; then
     exec_failure "The exec verb needs an argument separator." "Run agent-desktop sandbox exec $name -- <args>."
   fi
   shift
-  vm_state=$(vm_process_state "$VM_DIR/vmhost.pid")
-  if [ "$vm_state" = dead ]; then
-    rm -f "$VM_DIR/vmhost.pid"
-    vm_state=absent
-  fi
-  if [ "$vm_state" = absent ]; then
-    exec_failure "Sandbox $name is stopped." "Run agent-desktop sandbox start $name."
-  fi
-  if [ "$vm_state" = stale ]; then
-    exec_failure "Sandbox $name has a dead or foreign VM process record." "Run agent-desktop sandbox status $name."
+  phase=$(sandbox_phase "$AD_SANDBOX_DIR")
+  if [ "$phase" != running ]; then
+    exec_failure "Sandbox $name is $phase, not running." "Run agent-desktop sandbox status $name."
   fi
   if [ ! -f "$AD_SANDBOX_DIR/setup_done" ]; then
     exec_failure "Sandbox $name still needs guest setup." "Run agent-desktop sandbox status $name."
@@ -1068,11 +799,11 @@ do_exec() {
   host_helper_hash=$(printf '%s\n' "$host_helper_hash_line" | awk '{ print tolower($1) }')
   target=$user@$ip
   probe_status=0
-  guest_hash_line=$(guest_transport ssh probe "$target" 'shasum -a 1 ~/.local/bin/agent-desktop' 2>/dev/null) || probe_status=$?
+  guest_hash_line=$(guest_transport ssh "$target" 'shasum -a 1 ~/.local/bin/agent-desktop' 2>/dev/null) || probe_status=$?
   if [ "$probe_status" -eq 255 ]; then remote_login_failure "$name"; fi
   guest_hash=$(printf '%s\n' "$guest_hash_line" | awk '{ print tolower($1) }')
   probe_status=0
-  guest_helper_hash_line=$(guest_transport ssh probe "$target" "shasum -a 1 ~/.local/bin/$HELPER_NAME" 2>/dev/null) || probe_status=$?
+  guest_helper_hash_line=$(guest_transport ssh "$target" "shasum -a 1 ~/.local/bin/$HELPER_NAME" 2>/dev/null) || probe_status=$?
   if [ "$probe_status" -eq 255 ]; then remote_login_failure "$name"; fi
   guest_helper_hash=$(printf '%s\n' "$guest_helper_hash_line" | awk '{ print tolower($1) }')
   if ! sync_guest_file "$target" "$AD_BINARY" agent-desktop "$host_hash" "$guest_hash"; then
@@ -1092,13 +823,13 @@ do_exec() {
   fi
   trap 'rm -f "$exec_stderr"' EXIT
   ssh_status=0
-  guest_transport ssh long "$target" "$remote_command" 2> "$exec_stderr" || ssh_status=$?
+  guest_transport ssh "$target" "$remote_command" 2> "$exec_stderr" || ssh_status=$?
   guest_status=$(sed -n "s/^.*$exec_marker:\([0-9][0-9]*\)\$/\1/p" "$exec_stderr" | tail -n 1)
   sed -e "/^$exec_marker:[0-9][0-9]*\$/d" -e "s/$exec_marker:[0-9][0-9]*\$//" "$exec_stderr" >&2
   if [ "$ssh_status" -eq 255 ] && [ -z "$guest_status" ]; then
     remote_login_failure "$name"
   fi
-  return "$ssh_status"
+  return "${guest_status:-$ssh_status}"
 }
 
 require_provider_environment
@@ -1109,35 +840,16 @@ if [ "$verb" = __install_job ]; then
 fi
 
 case $verb in
-  check)
-    do_check
-    ;;
-  install)
-    do_install || exit $?
-    ;;
-  create)
+  check) do_check ;;
+  install) do_install || exit $? ;;
+  create|start|stop|status|rm|exec)
     require_sandbox_environment
-    do_create "${1:-}" || exit $?
-    ;;
-  start)
-    require_sandbox_environment
-    do_start "${1:-}" || exit $?
-    ;;
-  stop)
-    require_sandbox_environment
-    do_stop "${1:-}" || exit $?
-    ;;
-  status)
-    require_sandbox_environment
-    do_status "${1:-}" || exit $?
-    ;;
-  rm)
-    require_sandbox_environment
-    do_rm "${1:-}" || exit $?
-    ;;
-  exec)
-    require_sandbox_environment
-    do_exec "$@" || exit $?
+    if ! valid_name "${1:-}"; then
+      emit_fail INVALID_ARGS "The $verb verb needs a valid sandbox name." "Run agent-desktop sandbox $verb <name>."
+      [ "$verb" != exec ] || exit 125
+      exit 1
+    fi
+    "do_$verb" "$@" || exit $?
     ;;
   *)
     emit_fail INVALID_ARGS "The verb is not part of the macOS VM provider contract." "Run an agent-desktop sandbox command."

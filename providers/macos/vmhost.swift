@@ -316,12 +316,14 @@ final class ProgressLog: @unchecked Sendable {
     }
 
     static func create(at url: URL) throws -> ProgressLog {
-        guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+        guard FileManager.default.fileExists(atPath: url.path) || FileManager.default.createFile(atPath: url.path, contents: nil) else {
             throw VMError(message: "vmhost cannot create \(url.lastPathComponent).",
                           suggestion: "Check that the sandbox directory is writable, then run `agent-desktop sandbox create` again.")
         }
         do {
-            return ProgressLog(handle: try FileHandle(forWritingTo: url))
+            let handle = try FileHandle(forWritingTo: url)
+            handle.seekToEndOfFile()
+            return ProgressLog(handle: handle)
         } catch {
             throw VMError(message: "vmhost cannot open \(url.lastPathComponent).",
                           suggestion: "Check that the sandbox directory is writable, then run `agent-desktop sandbox create` again.")
@@ -414,7 +416,7 @@ struct InstallCommand {
             try await installer.install()
         } catch {
             withExtendedLifetime(observation) {}
-            throw VMError(message: "The image \(VersionText.macOS(image.operatingSystemVersion)) did not finish installing.",
+            throw VMError(message: "The image \(VersionText.macOS(image.operatingSystemVersion)) did not finish installing: \(error.localizedDescription)",
                           suggestion: "Run `agent-desktop sandbox create \(bundle.sandboxName)` again and read the vm/install.log file if it fails again.")
         }
         withExtendedLifetime(observation) {}
@@ -429,7 +431,7 @@ struct InstallCommand {
         let bookkeeping: Set<String> = ["install.log", "install.pid", "share", "vmhost.lock"]
         if FileManager.default.fileExists(atPath: bundle.root.path) {
             let contents = (try? FileManager.default.contentsOfDirectory(atPath: bundle.root.path)) ?? []
-            guard contents.allSatisfy(bookkeeping.contains) else {
+            guard contents.allSatisfy({ bookkeeping.contains($0) || $0.hasPrefix(".") }) else {
                 throw VMError(message: "The bundle directory \(bundle.root.path) is not empty.",
                               suggestion: "Remove it or choose an empty directory, then run `agent-desktop sandbox create` again.")
             }
