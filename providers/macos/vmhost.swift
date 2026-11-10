@@ -469,9 +469,12 @@ enum SparseDisk {
 
 final class VMBox: @unchecked Sendable {
     let machine: VZVirtualMachine
+    private let delegate: VMHostDelegate
 
-    init(_ machine: VZVirtualMachine) {
+    init(_ machine: VZVirtualMachine, delegate: VMHostDelegate) {
         self.machine = machine
+        self.delegate = delegate
+        machine.delegate = delegate
     }
 }
 
@@ -607,9 +610,9 @@ struct RunCommand {
 
     static func boot(bundle: Bundle, configuration: VZVirtualMachineConfiguration, showWindow: Bool) throws {
         let queue = showWindow ? DispatchQueue.main : DispatchQueue(label: "com.agent-desktop.vmhost")
-        let box = VMBox(VZVirtualMachine(configuration: configuration, queue: queue))
+        let machine = VZVirtualMachine(configuration: configuration, queue: queue)
         let outcome = ResultBox()
-        let window = showWindow ? SandboxWindow.make(bundle: bundle, machine: box.machine) : nil
+        let window = showWindow ? SandboxWindow.make(bundle: bundle, machine: machine) : nil
         let finish: (Result<Void, Error>) -> Void = { result in
             guard outcome.finish(result) else { return }
             if showWindow {
@@ -617,7 +620,7 @@ struct RunCommand {
             }
             window?.close()
         }
-        let delegate = VMHostDelegate(finish)
+        let box = VMBox(machine, delegate: VMHostDelegate(finish))
 
         signal(SIGTERM, SIG_IGN)
         let termination = DispatchSource.makeSignalSource(signal: SIGTERM, queue: queue)
@@ -647,7 +650,6 @@ struct RunCommand {
         termination.resume()
         window?.closeDelegate.onClose = requestStop
 
-        box.machine.delegate = delegate
         queue.async {
             box.machine.start { result in
                 if case let .failure(error) = result {
