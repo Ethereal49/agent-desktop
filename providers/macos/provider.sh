@@ -829,9 +829,16 @@ do_exec() {
   if ! exec_stderr=$(mktemp "$AD_SANDBOX_DIR/exec-stderr.XXXXXX"); then
     exec_failure "The exec output file for sandbox $name could not be created." "Run agent-desktop sandbox status $name."
   fi
-  trap 'rm -f "$exec_stderr"' EXIT
-  ssh_status=0
-  guest_transport ssh "$target" "$remote_command" 2> "$exec_stderr" || ssh_status=$?
+  trap 'rm -f "$exec_stderr" "$exec_stderr.status"' EXIT
+  # The guest controls how much it writes to stderr, so only the last 64 KiB ever reaches the host disk.
+  exec 3>&1
+  {
+    ssh_status=0
+    guest_transport ssh "$target" "$remote_command" 2>&1 >&3 || ssh_status=$?
+    printf '%s\n' "$ssh_status" > "$exec_stderr.status"
+  } | tail -c 65536 > "$exec_stderr"
+  exec 3>&-
+  ssh_status=$(cat "$exec_stderr.status" 2>/dev/null || printf '255\n')
   guest_status=$(sed -n "s/^.*$exec_marker:\([0-9][0-9]*\)\$/\1/p" "$exec_stderr" | tail -n 1)
   sed -e "/^$exec_marker:[0-9][0-9]*\$/d" -e "s/$exec_marker:[0-9][0-9]*\$//" "$exec_stderr" >&2
   if [ "$ssh_status" -eq 255 ] && [ -z "$guest_status" ]; then

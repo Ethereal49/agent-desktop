@@ -112,6 +112,7 @@ FAKE
 cat > "$tmp/guest/.local/bin/agent-desktop" <<'FAKE'
 #!/bin/sh
 for argument do printf '[%s]\n' "$argument"; done
+[ -z "${FAKE_GUEST_NOISE:-}" ] || head -c "$FAKE_GUEST_NOISE" /dev/zero | tr '\0' 'x' >&2
 printf 'guest warning\n' >&2
 exit "${FAKE_GUEST_EXIT:-0}"
 FAKE
@@ -244,6 +245,9 @@ for guest_exit in 3 125 255; do
   provider demo FAKE_GUEST_EXIT=$guest_exit exec demo -- version
   [ "$status" = "$guest_exit" ] || fail "exec turned guest exit $guest_exit into $status"
 done
+provider demo FAKE_GUEST_NOISE=300000 FAKE_GUEST_EXIT=7 exec demo -- version
+[ "$status" = 7 ] && [ "$(cat "$tmp/out")" = '[version]' ] || fail 'a noisy guest lost its output or exit status'
+[ "$(wc -c < "$tmp/err")" -le 65536 ] || fail 'guest stderr reached the host unbounded'
 provider demo FAKE_SSH=unreachable exec demo -- version
 expect 'exec with no Remote Login' 125 code ACTION_FAILED
 
