@@ -71,6 +71,8 @@ case ${1:-} in
     : > "$FAKE_VOLUME/private/etc/ssh/ssh_host_ed25519_key.pub"
     printf '/dev/disk99\tFAKE\t%s\n' "$FAKE_VOLUME"
     ;;
+  detach) printf 'hdiutil %s\n' "$*" >> "$FAKE_LOG" ;;
+  info) printf 'image-path      : %s\n/dev/disk99\n' "$AD_SANDBOX_DIR/vm/Disk.img" ;;
 esac
 FAKE
 fake pgrep <<'FAKE'
@@ -232,6 +234,7 @@ grep -q "vmhost run $tmp/sandboxes/demo/vm\$" "$FAKE_LOG" || fail 'a set-up sand
 [ -s "$tmp/sandboxes/demo/vm/host_key.pub" ] || fail 'start did not give the sandbox its own SSH host key'
 grep -q '^192.0.2.2 ' "$tmp/sandboxes/demo/known_hosts" || fail 'start did not pin the sandbox host key'
 grep -q -- '-o StrictHostKeyChecking=yes' "$FAKE_LOG" || fail 'a pinned sandbox did not verify the host key it pinned'
+grep -q 'hdiutil detach /dev/disk99' "$FAKE_LOG" || fail 'the guest disk stayed mounted after the host key was written'
 put demo stopped
 provider demo FAKE_HDIUTIL=broken start demo
 expect 'a guest disk that cannot be opened' 1 code ACTION_FAILED

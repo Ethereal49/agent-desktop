@@ -551,7 +551,7 @@ guest_transport() {
 
 detach_guest_disk() {
   disk=$1
-  for dev in $(hdiutil info 2>/dev/null | awk -v img="$disk" '$1 == "image-path" { found = ($3 == img) } found && $1 ~ /^\/dev\/disk/ { print $1 }'); do
+  for dev in $(hdiutil info 2>/dev/null | awk -v img="$disk" '$1 == "image-path" { path = $0; sub(/^[^:]*:[[:space:]]*/, "", path); found = (path == img) } found && $1 ~ /^\/dev\/disk/ { print $1 }'); do
     hdiutil detach "$dev" >/dev/null 2>&1 || true
   done
 }
