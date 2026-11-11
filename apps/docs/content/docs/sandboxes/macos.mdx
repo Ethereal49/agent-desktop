@@ -6,6 +6,18 @@ description: Install the macOS VM provider, create a macOS guest, complete the o
 
 The `macos` provider runs a macOS guest in a virtual machine on an Apple Silicon Mac. Only the first sandbox needs a person at the guest desktop; every sandbox you clone from it starts headless and comes up already set up. Cloning a set-up VM has been tested end to end. Creating the first VM from a macOS image is experimental.
 
+## What this isolates
+
+Each sandbox is a separate VM with its own disk, desktop, and agent-desktop state. That separates the desktop; it does not separate the network or the host.
+
+- Every sandbox on a host shares one virtual network. A guest can reach the host's network services, so treat a guest as code running on your network. Assume guests on one host can reach each other too.
+- A sandbox cloned from a set-up VM keeps that VM's SSH host key, and the host trusts a sandbox's key on first contact. Clones of one VM are therefore indistinguishable by key.
+- The SSH key in the sandbox directory is the guest credential. Anyone who can read `<state root>/sandboxes/<name>/id_ed25519` can run commands as the guest user, so protect the state root like your own account.
+- In the guest, Accessibility is granted to `sshd-keygen-wrapper`, so every SSH session as the guest user can drive its desktop.
+- The VM host runs as you with Apple's virtualization entitlement. The hypervisor and the guest OS are Apple's; agent-desktop does not prevent a guest escape.
+
+Use `agent-desktop sandbox` for a desktop you trust at the same level as your own account. Keep one trust level per host, and use a separate machine or a hosted sandbox for code you do not trust.
+
 ## Requirements
 
 - An Apple Silicon Mac. On an Intel Mac, `sandbox install macos` reports `unavailable`.
