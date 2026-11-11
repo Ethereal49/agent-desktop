@@ -104,7 +104,7 @@ Read `state`, `message` and optional `next`; `ok: true` alone does not mean the 
 - `stopped`: start the sandbox to use it, or remove it.
 - `broken`: follow `next`; a broken sandbox may need removal.
 
-A sandbox separates the desktop, not the network or the host. Sandboxes on one host share a virtual network, a guest can reach the host's network services, and clones of one VM share its SSH host key. Keep one trust level per host. The SSH key under `<state root>/sandboxes/<name>/` is the guest credential, and in the guest Accessibility belongs to `sshd-keygen-wrapper` for the whole user session.
+A sandbox separates the desktop, not the network or the host. Sandboxes on one host share a virtual network, and a guest can reach the host's network services; keep one trust level per host. Each sandbox has its own pinned SSH host key, so a guest cannot answer for another sandbox. The SSH key under `<state root>/sandboxes/<name>/` is the guest credential, and in the guest Accessibility belongs to `sshd-keygen-wrapper` for the whole user session.
 
 Cloning a configured macOS VM has been tested end to end. Installing the first VM from a macOS image is experimental and has not been verified end to end. Provider setup steps and limits are in the docs: `agent-browser.dev/desktop/sandboxes/macos`.
 

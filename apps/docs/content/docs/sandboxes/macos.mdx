@@ -11,7 +11,7 @@ The `macos` provider runs a macOS guest in a virtual machine on an Apple Silicon
 Each sandbox is a separate VM with its own disk, desktop, and agent-desktop state. That separates the desktop; it does not separate the network or the host.
 
 - Every sandbox on a host shares one virtual network. A guest can reach the host's network services, so treat a guest as code running on your network. Assume guests on one host can reach each other too.
-- A sandbox cloned from a set-up VM keeps that VM's SSH host key, and the host trusts a sandbox's key on first contact. Clones of one VM are therefore indistinguishable by key.
+- Each sandbox has its own SSH host key. Before a start or a clone boots the guest, the provider writes a fresh key into the stopped guest disk and pins the public key, and SSH then refuses any other host. The host must be able to open the guest disk to do this, so a disk it cannot open fails the start or clone. A freshly installed VM has no host key until Remote Login is enabled, so its first setup connection is trust-on-first-use.
 - The SSH key in the sandbox directory is the guest credential. Anyone who can read `<state root>/sandboxes/<name>/id_ed25519` can run commands as the guest user, so protect the state root like your own account.
 - In the guest, Accessibility is granted to `sshd-keygen-wrapper`, so every SSH session as the guest user can drive its desktop.
 - The VM host runs as you with Apple's virtualization entitlement. The hypervisor and the guest OS are Apple's; agent-desktop does not prevent a guest escape.

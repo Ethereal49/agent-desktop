@@ -511,6 +511,13 @@ create_clone() {
     emit_fail ACTION_FAILED "The VM for sandbox $name could not be cloned: $clone_reply" "Run agent-desktop sandbox rm $name, fix the cause, then create it again."
     return 1
   fi
+  rm -f "$AD_SANDBOX_DIR/known_hosts" "$AD_SANDBOX_DIR/vm/host_key.pub"
+  rotate_status=0
+  rotate_host_key || rotate_status=$?
+  if [ "$rotate_status" -ne 0 ]; then
+    emit_fail ACTION_FAILED "Sandbox $name could not be given its own SSH host key." "Run agent-desktop sandbox rm $name and create it again; a guest disk that cannot be opened cannot be cloned safely."
+    return 1
+  fi
   if ! copy_guest_share "$VM_DIR"; then
     emit_fail ACTION_FAILED "The guest setup files could not be copied into sandbox $name." "Run agent-desktop sandbox status $name."
     return 1
@@ -528,9 +535,11 @@ guest_user() {
 guest_transport() {
   transport_tool=$1
   shift
+  host_key_check=accept-new
+  [ -s "$AD_SANDBOX_DIR/vm/host_key.pub" ] && host_key_check=yes
   "$transport_tool" -F /dev/null -i "$AD_SANDBOX_DIR/id_ed25519" \
     -o IdentitiesOnly=yes \
-    -o StrictHostKeyChecking=accept-new \
+    -o "StrictHostKeyChecking=$host_key_check" \
     -o "UserKnownHostsFile=$AD_SANDBOX_DIR/known_hosts" \
     -o BatchMode=yes \
     -o ConnectTimeout=5 \
@@ -538,6 +547,69 @@ guest_transport() {
     -o ServerAliveInterval=3 \
     -o ServerAliveCountMax=3 \
     "$@"
+}
+
+detach_guest_disk() {
+  disk=$1
+  for dev in $(hdiutil info 2>/dev/null | awk -v img="$disk" '$1 == "image-path" { found = ($3 == img) } found && $1 ~ /^\/dev\/disk/ { print $1 }'); do
+    hdiutil detach "$dev" >/dev/null 2>&1 || true
+  done
+}
+
+guest_ssh_dir() {
+  attach=$1
+  mounts=$2
+  printf '%s\n' "$attach" | awk -F '\t' '$3 ~ /^\/Volumes\// { print $3 }' > "$mounts"
+  while IFS= read -r mount_point; do
+    if [ -f "$mount_point/private/etc/ssh/ssh_host_ed25519_key" ]; then
+      printf '%s\n' "$mount_point"
+      return 0
+    fi
+  done < "$mounts"
+  return 1
+}
+
+rotate_host_key() {
+  disk=$AD_SANDBOX_DIR/vm/Disk.img
+  pub=$AD_SANDBOX_DIR/vm/host_key.pub
+  [ -s "$pub" ] && return 0
+  [ -f "$disk" ] || return 2
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/ad-host-key.XXXXXX") || return 1
+  if ! ssh-keygen -q -t ed25519 -N '' -C agent-desktop-sandbox-host -f "$tmp/key" >/dev/null 2>&1; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  detach_guest_disk "$disk"
+  if ! attach=$(hdiutil attach "$disk" -imagekey diskimage-class=CRawDiskImage -owners off -noverify -noautoopen 2>/dev/null); then
+    rm -rf "$tmp"
+    return 1
+  fi
+  if ! dir=$(guest_ssh_dir "$attach" "$tmp/mounts"); then
+    detach_guest_disk "$disk"
+    rm -rf "$tmp"
+    return 2
+  fi
+  if ! cat "$tmp/key" > "$dir/private/etc/ssh/ssh_host_ed25519_key" || \
+    ! cat "$tmp/key.pub" > "$dir/private/etc/ssh/ssh_host_ed25519_key.pub"; then
+    detach_guest_disk "$disk"
+    rm -rf "$tmp"
+    return 1
+  fi
+  detach_guest_disk "$disk"
+  if ! cp "$tmp/key.pub" "$pub"; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  rm -rf "$tmp"
+  return 0
+}
+
+pin_host_key() {
+  ip=$1
+  pub=$AD_SANDBOX_DIR/vm/host_key.pub
+  [ -s "$pub" ] || return 0
+  printf '%s %s\n' "$ip" "$(awk 'NR == 1 { print $1, $2 }' "$pub")" > "$AD_SANDBOX_DIR/known_hosts" || return 1
+  chmod 0600 "$AD_SANDBOX_DIR/known_hosts"
 }
 
 # A guest that needs a person is only reachable through its window, so a headless one must be restarted.
@@ -602,6 +674,10 @@ check_guest_setup() {
   if [ -z "$ip" ]; then
     guest_not_answering "$name"
     return 0
+  fi
+  if ! pin_host_key "$ip"; then
+    emit_fail ACTION_FAILED "The SSH host key for sandbox $name could not be saved." "Run agent-desktop sandbox status $name again after checking directory permissions."
+    return 1
   fi
   target=$user@$ip
   probe_status=0
@@ -673,6 +749,12 @@ do_start() {
     if ! host_runtime_supported; then return 0; fi
     if ! provider_ready; then
       vmhost_missing
+      return 1
+    fi
+    rotate_status=0
+    rotate_host_key || rotate_status=$?
+    if [ "$rotate_status" -ne 0 ] && [ "$rotate_status" -ne 2 ]; then
+      emit_fail ACTION_FAILED "Sandbox $name could not be given its own SSH host key." "Run agent-desktop sandbox status $name; a guest disk that cannot be opened cannot be started safely."
       return 1
     fi
     if ! spawn_vmhost "$mode"; then
@@ -812,6 +894,9 @@ do_exec() {
   ip=$(printf '%s' "$ip_json" | sed -n 's/.*"ip"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   if [ -z "$ip" ]; then
     exec_failure "Sandbox $name has no reachable guest address yet." "Run agent-desktop sandbox status $name."
+  fi
+  if ! pin_host_key "$ip"; then
+    exec_failure "The SSH host key for sandbox $name could not be saved." "Run agent-desktop sandbox status $name again after checking directory permissions."
   fi
   if ! host_hash_line=$(shasum -a 1 "$AD_BINARY" 2>/dev/null); then
     exec_failure "The host agent-desktop binary could not be hashed." "Rebuild agent-desktop, then run sandbox exec $name again."
