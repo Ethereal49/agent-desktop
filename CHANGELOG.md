@@ -2,6 +2,10 @@
 
 ## [1.3.0](https://github.com/vercel-labs/agent-desktop/compare/v1.2.0...v1.3.0) (2026-11-11)
 
+### ⚠ BREAKING CHANGES
+
+* macOS `menu` and `menubar` snapshots no longer include `data.window`, because those surfaces belong to the application rather than a window. A caller that reads `data.window` for those surfaces must handle its absence. ([#376](https://github.com/vercel-labs/agent-desktop/pull/376))
+
 ### Features
 
 * Add `agent-desktop sandbox`, which installs a desktop provider and creates, starts, stops, lists and removes sandboxes. `sandbox exec` runs a command in the guest and passes its stdout and exit status through. ([#505](https://github.com/vercel-labs/agent-desktop/pull/505))
