@@ -559,7 +559,7 @@ detach_guest_disk() {
 guest_ssh_dir() {
   attach=$1
   mounts=$2
-  printf '%s\n' "$attach" | awk -F '\t' '$3 ~ /^\/Volumes\// { print $3 }' > "$mounts"
+  printf '%s\n' "$attach" | awk -F '\t' '$3 ~ /^\// { print $3 }' > "$mounts"
   while IFS= read -r mount_point; do
     if [ -f "$mount_point/private/etc/ssh/ssh_host_ed25519_key" ]; then
       printf '%s\n' "$mount_point"

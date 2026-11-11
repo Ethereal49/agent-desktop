@@ -52,8 +52,26 @@ while [ "$#" -gt 0 ]; do
   if [ "$1" = -f ]; then shift; key=$1; fi
   shift
 done
-printf 'private key\n' > "$key"
-printf 'public key\n' > "$key.pub"
+n=$(cat "$FAKE_KEY_COUNTER" 2>/dev/null || printf '0')
+n=$((n + 1))
+printf '%s\n' "$n" > "$FAKE_KEY_COUNTER"
+printf 'private key %s\n' "$n" > "$key"
+printf 'public key %s\n' "$n" > "$key.pub"
+FAKE
+FAKE_KEY_COUNTER=$tmp/key-counter
+FAKE_VOLUME=$tmp/volume
+export FAKE_KEY_COUNTER FAKE_VOLUME
+fake hdiutil <<'FAKE'
+#!/bin/sh
+[ "${FAKE_HDIUTIL:-ok}" = ok ] || exit 1
+case ${1:-} in
+  attach)
+    mkdir -p "$FAKE_VOLUME/private/etc/ssh"
+    : > "$FAKE_VOLUME/private/etc/ssh/ssh_host_ed25519_key"
+    : > "$FAKE_VOLUME/private/etc/ssh/ssh_host_ed25519_key.pub"
+    printf '/dev/disk99\tFAKE\t%s\n' "$FAKE_VOLUME"
+    ;;
+esac
 FAKE
 fake pgrep <<'FAKE'
 #!/bin/sh
@@ -72,6 +90,7 @@ case $1 in
   clone)
     [ "${FAKE_CLONE:-ok}" = ok ] || { printf 'clonefile is not supported here\n'; exit 1; }
     mkdir -p "$3"
+    cp "$2/Disk.img" "$3/Disk.img" 2>/dev/null || :
     ;;
   ip) printf '{"ok":true,"ip":"192.0.2.2"}\n' ;;
   run)
@@ -210,6 +229,13 @@ provider demo start demo
 vm_pid=$(cat "$tmp/sandboxes/demo/vm/vmhost.pid")
 expect 'start boots a stopped sandbox' 0 state running
 grep -q "vmhost run $tmp/sandboxes/demo/vm\$" "$FAKE_LOG" || fail 'a set-up sandbox did not start headless'
+[ -s "$tmp/sandboxes/demo/vm/host_key.pub" ] || fail 'start did not give the sandbox its own SSH host key'
+grep -q '^192.0.2.2 ' "$tmp/sandboxes/demo/known_hosts" || fail 'start did not pin the sandbox host key'
+grep -q -- '-o StrictHostKeyChecking=yes' "$FAKE_LOG" || fail 'a pinned sandbox did not verify the host key it pinned'
+put demo stopped
+provider demo FAKE_HDIUTIL=broken start demo
+expect 'a guest disk that cannot be opened' 1 code ACTION_FAILED
+[ ! -f "$tmp/sandboxes/demo/vm/vmhost.pid" ] || fail 'a sandbox without its own host key was booted'
 put demo stopped
 provider demo AD_SET_WINDOW=on 'AD_SET_TITLE=Review build' start demo
 vm_pid=$(cat "$tmp/sandboxes/demo/vm/vmhost.pid")
