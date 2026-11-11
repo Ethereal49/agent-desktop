@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.3.0](https://github.com/vercel-labs/agent-desktop/compare/v1.2.0...v1.3.0) (2026-11-11)
+
+### Features
+
+* Add `agent-desktop sandbox`, which installs a desktop provider and creates, starts, stops, lists and removes sandboxes. `sandbox exec` runs a command in the guest and passes its stdout and exit status through. ([#505](https://github.com/vercel-labs/agent-desktop/pull/505))
+* Add the `macos` sandbox provider: a macOS VM built and signed on the user's Mac, set up by hand once, then cloned for each sandbox with its own SSH host key. ([#506](https://github.com/vercel-labs/agent-desktop/pull/506))
+
+### Performance
+
+* On macOS, read the app process inventory with libproc instead of spawning `ps`. ([#573](https://github.com/vercel-labs/agent-desktop/pull/573))
+
+### Bug Fixes
+
+* Close reachable invalid state transitions in sessions, refs, trace, MCP and waits. ([#602](https://github.com/vercel-labs/agent-desktop/pull/602))
+* On macOS, resolve native menus and verify lifecycle transitions. ([#376](https://github.com/vercel-labs/agent-desktop/pull/376))
+
+### Documentation
+
+* Upgrade the docs site to TypeScript 7. ([#622](https://github.com/vercel-labs/agent-desktop/pull/622))
+* Say that every local account can reach the `--cdp` port. ([#589](https://github.com/vercel-labs/agent-desktop/pull/589))
+
 ## [1.2.0](https://github.com/vercel-labs/agent-desktop/compare/v1.1.0...v1.2.0) (2026-11-05)
 
 ### Features
