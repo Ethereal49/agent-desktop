@@ -358,8 +358,8 @@ verify_image_sha() {
   [ -n "$verify_sha" ] && [ "$verify_sha" = "$2" ]
 }
 
-download_latest_image() {
-  catalog=$1.catalog
+latest_image() {
+  catalog=$1
   host_version=$(sw_vers -productVersion 2>/dev/null || true)
   if ! curl -fsSL --connect-timeout 30 --speed-limit 1 --speed-time 120 -o "$catalog" 'https://mesu.apple.com/assets/macos/com_apple_macOSIPSW/com_apple_macOSIPSW.xml'; then
     printf '%s\n' 'The Apple macOS image catalog could not be downloaded.'
@@ -375,11 +375,15 @@ download_latest_image() {
     printf '%s\n' "The Apple macOS image catalog lists no image this Mac running macOS $host_version can install."
     return 1
   fi
-  if ! curl -fsSL --connect-timeout 30 --speed-limit 1 --speed-time 120 -o "$1" "$url"; then
+  printf '%s\n%s\n' "$url" "$expected"
+}
+
+download_image() {
+  if ! curl -fsSL --connect-timeout 30 --speed-limit 1 --speed-time 120 -o "$3" "$1"; then
     printf '%s\n' 'The Apple macOS image could not be downloaded.'
     return 1
   fi
-  if ! verify_image_sha "$1" "$expected"; then
+  if ! verify_image_sha "$3" "$2"; then
     printf '%s\n' 'The downloaded Apple macOS image did not match its published SHA-1.'
     return 1
   fi
@@ -389,7 +393,17 @@ do_install_job() {
   ipsw=$2
   if [ "$ipsw" = latest ]; then
     ipsw=$AD_SANDBOX_DIR/restore.ipsw
-    if ! download_latest_image "$ipsw"; then rm -f "$ipsw"; return 1; fi
+    if [ -z "${AD_IMAGE_URL:-}" ] || [ -z "${AD_IMAGE_SHA1:-}" ]; then
+      if ! resolved=$(latest_image "$AD_SANDBOX_DIR/restore.ipsw.catalog"); then
+        rm -f "$ipsw"
+        printf '%s\n' "$resolved"
+        return 1
+      fi
+      AD_IMAGE_URL=$(printf '%s\n' "$resolved" | sed -n '1p')
+      AD_IMAGE_SHA1=$(printf '%s\n' "$resolved" | sed -n '2p')
+      export AD_IMAGE_URL AD_IMAGE_SHA1
+    fi
+    if ! download_image "$AD_IMAGE_URL" "$AD_IMAGE_SHA1" "$ipsw"; then rm -f "$ipsw"; return 1; fi
   fi
   if ! "$VMHOST" install "$VM_DIR" "$ipsw"; then return 1; fi
   rm -f "$AD_SANDBOX_DIR/restore.ipsw"
@@ -483,6 +497,24 @@ do_create() {
       emit_fail INVALID_ARGS "The supplied macOS image file was not found." "Run agent-desktop sandbox create $name --set ipsw=<path> with an existing image file, or --set ipsw=latest to download one."
       return 1
     fi
+  fi
+  guest_name=${AD_SET_USER:-$(id -un 2>/dev/null || true)}
+  if [ -z "$guest_name" ]; then
+    emit_fail ACTION_FAILED "The guest user name could not be determined." "Run agent-desktop sandbox create $name --set user=<name>."
+    return 1
+  fi
+  if ! valid_guest_user "$guest_name"; then
+    emit_fail INVALID_ARGS "The guest user name contains unsupported characters." "Run agent-desktop sandbox create $name --set user=<short-name>."
+    return 1
+  fi
+  if [ "$image_path" = latest ]; then
+    if ! resolved=$(latest_image "$AD_SANDBOX_DIR/restore.ipsw.catalog"); then
+      emit_fail ACTION_FAILED "$resolved" "Run agent-desktop sandbox create $name --set ipsw=<path> with a macOS image this Mac can install, or update macOS on this host."
+      return 1
+    fi
+    AD_IMAGE_URL=$(printf '%s\n' "$resolved" | sed -n '1p')
+    AD_IMAGE_SHA1=$(printf '%s\n' "$resolved" | sed -n '2p')
+    export AD_IMAGE_URL AD_IMAGE_SHA1
   fi
   if ! create_guest_identity "$name"; then return 1; fi
   start_install_job "$name" "$image_path"

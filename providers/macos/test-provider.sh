@@ -357,6 +357,14 @@ grep -q 'vmhost install' "$FAKE_LOG" && fail 'a corrupt download was installed'
 provider new status new
 expect 'status after a failed install' 0 state broken
 
+FAKE_CATALOG=$(entry 2222222222222222222222222222222222222222 26.1)
+rm -rf "$tmp/sandboxes/new"
+: > "$FAKE_LOG"
+provider new AD_SET_IPSW=latest create new
+expect 'a catalog image newer than this Mac' 1 code ACTION_FAILED
+field message | grep -q 'no image this Mac running macOS 14.0 can install' || fail 'the refusal did not name the host version'
+[ ! -f "$tmp/sandboxes/new/vm/install.pid" ] || fail 'a doomed install job was started'
+
 put base running
 rm -rf "$tmp/sandboxes/new"
 provider new AD_SET_FROM=base create new
