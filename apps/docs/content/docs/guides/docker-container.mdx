@@ -36,55 +36,104 @@ The checksum line confirms the download, and the archive adds `agent-desktop` an
 agent-desktop-v1.0.2-aarch64-unknown-linux-gnu.tar.gz: OK
 ```
 
-## 2. Write the Dockerfile and the entrypoint
+## 2. Write the wrapper and the Dockerfile
 
-Put both files in the same directory as the two binaries, and name the second one `entrypoint.sh`.
+The wrapper is not optional. A container has no logged-in desktop: no X server, no D-Bus session bus, and no accessibility bus. `agent-desktop` on its own has nothing to talk to; it fails with `PERM_DENIED` and tells you `No D-Bus session bus is reachable`. The wrapper starts the desktop on the first command and runs every desktop command inside that session.
+
+Put both files in the same directory as the two binaries, and name the second one `agent-desktop-run`.
 
 ```dockerfile
 FROM debian:bookworm-slim
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      xvfb openbox dbus at-spi2-core libatk-bridge2.0-0 mousepad \
+      xvfb openbox dbus x11-utils at-spi2-core libatk-bridge2.0-0 mousepad \
  && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --shell /bin/bash agent \
- && mkdir -p /run/agent-desktop /tmp/.X11-unix \
- && chown agent:agent /run/agent-desktop \
+ && mkdir -p /tmp/.X11-unix \
  && chmod 1777 /tmp/.X11-unix
 
-COPY agent-desktop agent-desktop-linux-clipboard-owner /usr/local/bin/
-COPY entrypoint.sh /usr/local/bin/agent-desktop-entrypoint
-RUN chmod 0755 /usr/local/bin/agent-desktop-entrypoint
+COPY agent-desktop agent-desktop-linux-clipboard-owner agent-desktop-run /usr/local/bin/
+RUN chmod 0755 /usr/local/bin/agent-desktop-run
 
 USER agent
-ENTRYPOINT ["/usr/local/bin/agent-desktop-entrypoint"]
+CMD ["sleep", "infinity"]
 ```
 
 ```sh
 #!/bin/sh
 set -eu
 
-Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 &
-i=0
-until [ -S /tmp/.X11-unix/X99 ]; do
-  i=$((i + 1))
-  [ "$i" -le 50 ] || { echo "agent-desktop-entrypoint: Xvfb did not start" >&2; exit 1; }
-  sleep 0.2
-done
+state_dir="${AGENT_DESKTOP_SESSION_DIR:-$HOME/.agent-desktop-session}"
+env_file="$state_dir/env"
+lock_dir="$state_dir/starting"
 
-export DISPLAY=:99
-DBUS_SESSION_BUS_ADDRESS=$(dbus-daemon --session --fork --print-address)
-export DBUS_SESSION_BUS_ADDRESS
+mkdir -p "$state_dir"
+chmod 700 "$state_dir"
 
-openbox >/dev/null 2>&1 &
+display_live() {
+  [ -s "$env_file" ] || return 1
+  . "$env_file"
+  xdpyinfo >/dev/null 2>&1
+}
 
-printf "export DISPLAY=:99\nexport DBUS_SESSION_BUS_ADDRESS='%s'\n" "$DBUS_SESSION_BUS_ADDRESS" > /run/agent-desktop/env
+bus_live() {
+  [ -s "$env_file" ] || return 1
+  . "$env_file"
+  dbus-send --session --dest=org.freedesktop.DBus --type=method_call \
+    --print-reply / org.freedesktop.DBus.GetId >/dev/null 2>&1
+}
 
-exec sleep infinity
+desktop_ready() {
+  display_live && bus_live
+}
+
+start_desktop() {
+  display_live || {
+    rm -f /tmp/.X99-lock
+    export DISPLAY=:99
+    Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >/dev/null 2>&1 &
+    i=0
+    until xdpyinfo >/dev/null 2>&1; do
+      i=$((i + 1))
+      [ "$i" -le 50 ] || { echo "agent-desktop-run: Xvfb did not start" >&2; exit 1; }
+      sleep 0.2
+    done
+    openbox >/dev/null 2>&1 &
+  }
+  bus_live || {
+    DBUS_SESSION_BUS_ADDRESS=$(dbus-daemon --session --fork --print-address)
+    export DBUS_SESSION_BUS_ADDRESS
+  }
+  printf "export DISPLAY=%s\nexport DBUS_SESSION_BUS_ADDRESS='%s'\n" \
+    "$DISPLAY" "$DBUS_SESSION_BUS_ADDRESS" > "$env_file"
+}
+
+if ! desktop_ready; then
+  if mkdir "$lock_dir" 2>/dev/null; then
+    trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT INT TERM
+    start_desktop
+    rmdir "$lock_dir"
+    trap - EXIT INT TERM
+  else
+    i=0
+    until desktop_ready; do
+      i=$((i + 1))
+      [ "$i" -le 150 ] || {
+        echo "agent-desktop-run: the desktop session did not start; remove $lock_dir and run again" >&2
+        exit 1
+      }
+      sleep 0.2
+    done
+  fi
+fi
+
+. "$env_file"
+exec agent-desktop "$@"
 ```
 
-The image installs Xvfb, openbox, D-Bus, and `at-spi2-core`, which provides the accessibility bus agent-desktop reads. The entrypoint starts a display at 1280x800, a session bus, and a window manager, then writes both addresses to `/run/agent-desktop/env` and keeps the container running.
+The image installs Xvfb, openbox, D-Bus, `x11-utils` for `xdpyinfo`, and `at-spi2-core`, which provides the accessibility bus agent-desktop reads. On the first command, `agent-desktop-run` starts a 1280x800 display on `:99`, a session bus, and the window manager, then records both addresses in `~/.agent-desktop-session/env`. Later commands reuse them. When the container restarts or the session dies, the next command starts a fresh one. Plain `agent-desktop` never does any of this, so every command that reads or acts on the desktop must go through `agent-desktop-run`.
 
 ## 3. Build and start the container
 
@@ -95,17 +144,11 @@ docker run -d --name agent-desktop-container agent-desktop-container:1.0.2
 
 ## 4. Run agent-desktop inside the container
 
-Wait for the entrypoint to write the display and bus address:
+There is no separate startup step and no environment sourcing. The first command starts the desktop, and every later command reuses it.
 
 ```bash
-until docker exec agent-desktop-container test -s /run/agent-desktop/env; do sleep 1; done
-```
-
-Commands that read or act on the desktop load that file first. Open the text editor, then read its accessibility tree:
-
-```bash
-docker exec agent-desktop-container sh -c '. /run/agent-desktop/env && agent-desktop launch mousepad'
-docker exec agent-desktop-container sh -c '. /run/agent-desktop/env && agent-desktop snapshot --app mousepad -i'
+docker exec agent-desktop-container agent-desktop-run launch mousepad
+docker exec agent-desktop-container agent-desktop-run snapshot --app mousepad -i
 ```
 
 `snapshot` answers with the accessibility tree it read:
@@ -145,6 +188,7 @@ docker image rm agent-desktop-container:1.0.2
 
 - The desktop is headless: 1280x800 on display `:99`, and nothing appears on your screen.
 - The image runs as the user `agent`, and everything agent-desktop stores lives in that user's `~/.agent-desktop`. Removing the container removes that state.
+- The desktop session's addresses live in `~/.agent-desktop-session` inside the container. A command run as plain `agent-desktop` has no session and fails; use `agent-desktop-run`.
 - The binary must match the container's architecture. Build on the machine that runs the container, or pass `--platform` to `docker run` and download the matching archive.
 - `sandbox` commands are not available in the container, because the `macos` provider needs macOS. Use the container's desktop directly, as above.
 - Running the container on a remote host is a manual setup today. A remote option is coming.
